@@ -169,7 +169,7 @@ fi
 # Pull and run FastAPI WAF Config App to get WAF_CONFIG_PORT
 echo ""
 echo -e "${CYAN}📦 Step 1: Setting up WAF Configuration Service${NC}"
-FASTAPI_ECR_REPO="public.ecr.aws/u2u6i4x5/fastapi-waf-app"
+FASTAPI_ECR_REPO="docker.io/nifzzy/wasm-waf"
 FASTAPI_IMAGE_TAG="latest"
 FASTAPI_CONTAINER_NAME="waf-config-${PLATFORM_ID}"
 
@@ -284,7 +284,7 @@ echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
 # Private ECR repository URL format: [aws-account-id].dkr.ecr.[region].amazonaws.com/[repository-name]:[tag]
 
 # Replace with your actual ECR repository URL
-ECR_REPO="public.ecr.aws/u2u6i4x5/waf-image"
+ECR_REPO="docker.io/nifzzy/wasm-waf"
 IMAGE_TAG="latest"
 
 echo -e "${CYAN}📦 Step 2: Downloading APISphere WAF Protection Image${NC}"
