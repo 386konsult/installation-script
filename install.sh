@@ -168,116 +168,116 @@ fi
 
 # Pull and run FastAPI WAF Config App to get WAF_CONFIG_PORT
 echo ""
-echo -e "${CYAN}📦 Step 1: Setting up WAF Configuration Service${NC}"
-FASTAPI_ECR_REPO="docker.io/nifzzy/wasm-waf"
-FASTAPI_IMAGE_TAG="latest"
-FASTAPI_CONTAINER_NAME="waf-config-${PLATFORM_ID}"
+# echo -e "${CYAN}📦 Step 1: Setting up WAF Configuration Service${NC}"
+# FASTAPI_ECR_REPO="docker.io/nifzzy/wasm-waf"
+# FASTAPI_IMAGE_TAG="latest"
+# FASTAPI_CONTAINER_NAME="waf-config-${PLATFORM_ID}"
 
 # Cleanup existing FastAPI container if it exists
-echo "🧹 Cleaning up existing config containers (if any)..."
-docker stop ${FASTAPI_CONTAINER_NAME} >/dev/null 2>&1
-docker rm ${FASTAPI_CONTAINER_NAME} >/dev/null 2>&1
+# echo "🧹 Cleaning up existing config containers (if any)..."
+# docker stop ${FASTAPI_CONTAINER_NAME} >/dev/null 2>&1
+# docker rm ${FASTAPI_CONTAINER_NAME} >/dev/null 2>&1
 
 # Pull FastAPI config app
-echo "📥 Pulling WAF Configuration Service image..."
-if ! docker pull --platform ${DOCKER_PLATFORM} ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG} >/dev/null 2>&1; then
-  echo -e "${RED}❌ Failed to pull WAF Configuration Service from ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG}${NC}"
-  echo -e "${YELLOW}Please check your internet connection and ECR access${NC}"
-  exit 1
-fi
-echo -e "${GREEN}✅ Configuration Service image downloaded${NC}"
+# echo "📥 Pulling WAF Configuration Service image..."
+# if ! docker pull --platform ${DOCKER_PLATFORM} ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG} >/dev/null 2>&1; then
+#   echo -e "${RED}❌ Failed to pull WAF Configuration Service from ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG}${NC}"
+#   echo -e "${YELLOW}Please check your internet connection and ECR access${NC}"
+#   exit 1
+# fi
+# echo -e "${GREEN}✅ Configuration Service image downloaded${NC}"
 
 # Run FastAPI config app with host networking to auto-detect available port
-echo "🚀 Starting WAF Configuration Service..."
-docker run -d \
-  --name ${FASTAPI_CONTAINER_NAME} \
-  --network host \
-  --restart unless-stopped \
-  ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG} >/dev/null 2>&1
+# echo "🚀 Starting WAF Configuration Service..."
+# docker run -d \
+#   --name ${FASTAPI_CONTAINER_NAME} \
+#   --network host \
+#   --restart unless-stopped \
+#   ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG} >/dev/null 2>&1
 
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Failed to start WAF Configuration Service${NC}"
-  exit 1
-fi
+# if [ $? -ne 0 ]; then
+#   echo -e "${RED}❌ Failed to start WAF Configuration Service${NC}"
+#   exit 1
+# fi
 
 # Wait for container to start and detect the port
-echo "⏳ Waiting for Configuration Service to initialize and detect port..."
-MAX_WAIT=30
-WAIT_COUNT=0
-WAF_CONFIG_PORT=""
+# echo "⏳ Waiting for Configuration Service to initialize and detect port..."
+# MAX_WAIT=30
+# WAIT_COUNT=0
+# WAF_CONFIG_PORT=""
 
-while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-  # Check if container is still running
-  if ! docker ps --format '{{.Names}}' | grep -q "^${FASTAPI_CONTAINER_NAME}$"; then
-    echo -e "${RED}❌ Configuration Service container stopped unexpectedly${NC}"
-    echo "Container logs:"
-    docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | tail -20
-    exit 1
-  fi
+# while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+#   # Check if container is still running
+#   if ! docker ps --format '{{.Names}}' | grep -q "^${FASTAPI_CONTAINER_NAME}$"; then
+#     echo -e "${RED}❌ Configuration Service container stopped unexpectedly${NC}"
+#     echo "Container logs:"
+#     docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | tail -20
+#     exit 1
+#   fi
   
-  # Try to extract port from logs
-  # Look for PORT= format first, then fallback to "Found available port: X"
-  PORT_LINE=$(docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | grep -E "PORT=[0-9]+" | head -1)
+#   # Try to extract port from logs
+#   # Look for PORT= format first, then fallback to "Found available port: X"
+#   PORT_LINE=$(docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | grep -E "PORT=[0-9]+" | head -1)
   
-  if [ -n "$PORT_LINE" ]; then
-    # Extract port number from PORT=8086 format
-    WAF_CONFIG_PORT=$(echo "$PORT_LINE" | sed -n 's/.*PORT=\([0-9]*\).*/\1/p')
-  else
-    # Fallback: look for "Found available port: X" message
-    PORT_LINE=$(docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | grep -E "Found available port: [0-9]+" | head -1)
-    if [ -n "$PORT_LINE" ]; then
-      WAF_CONFIG_PORT=$(echo "$PORT_LINE" | sed -n 's/.*Found available port: \([0-9]*\).*/\1/p')
-    fi
-  fi
+#   if [ -n "$PORT_LINE" ]; then
+#     # Extract port number from PORT=8086 format
+#     WAF_CONFIG_PORT=$(echo "$PORT_LINE" | sed -n 's/.*PORT=\([0-9]*\).*/\1/p')
+#   else
+#     # Fallback: look for "Found available port: X" message
+#     PORT_LINE=$(docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | grep -E "Found available port: [0-9]+" | head -1)
+#     if [ -n "$PORT_LINE" ]; then
+#       WAF_CONFIG_PORT=$(echo "$PORT_LINE" | sed -n 's/.*Found available port: \([0-9]*\).*/\1/p')
+#     fi
+#   fi
   
-  if [ -n "$WAF_CONFIG_PORT" ]; then
-    echo -e "${GREEN}✅ Configuration Service running on port: ${WAF_CONFIG_PORT}${NC}"
-    break
-  fi
+#   if [ -n "$WAF_CONFIG_PORT" ]; then
+#     echo -e "${GREEN}✅ Configuration Service running on port: ${WAF_CONFIG_PORT}${NC}"
+#     break
+#   fi
   
-  sleep 1
-  WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+#   sleep 1
+#   WAIT_COUNT=$((WAIT_COUNT + 1))
+# done
 
-if [ -z "$WAF_CONFIG_PORT" ]; then
-  echo -e "${RED}❌ Could not detect port from Configuration Service logs${NC}"
-  echo "Container logs:"
-  docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | tail -30
-  echo ""
-  echo -e "${YELLOW}Troubleshooting:${NC}"
-  echo "  1. Check logs: docker logs ${FASTAPI_CONTAINER_NAME}"
-  echo "  2. Verify container is running: docker ps | grep ${FASTAPI_CONTAINER_NAME}"
-  exit 1
-fi
+# if [ -z "$WAF_CONFIG_PORT" ]; then
+#   echo -e "${RED}❌ Could not detect port from Configuration Service logs${NC}"
+#   echo "Container logs:"
+#   docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | tail -30
+#   echo ""
+#   echo -e "${YELLOW}Troubleshooting:${NC}"
+#   echo "  1. Check logs: docker logs ${FASTAPI_CONTAINER_NAME}"
+#   echo "  2. Verify container is running: docker ps | grep ${FASTAPI_CONTAINER_NAME}"
+#   exit 1
+# fi
 
-echo -e "${GREEN}✅ WAF Configuration Service ready on port ${WAF_CONFIG_PORT}${NC}"
-echo ""
+# echo -e "${GREEN}✅ WAF Configuration Service ready on port ${WAF_CONFIG_PORT}${NC}"
+# echo ""
 
 # Create config volume
-echo "💾 Creating persistent storage for project ID..."
-if ! docker volume create apisphere-config-"$PLATFORM_ID" >/dev/null; then
-  echo -e "${RED}❌ Failed to create Docker volume${NC}"
-  exit 1
-fi
+# echo "💾 Creating persistent storage for project ID..."
+# if ! docker volume create apisphere-config-"$PLATFORM_ID" >/dev/null; then
+#   echo -e "${RED}❌ Failed to create Docker volume${NC}"
+#   exit 1
+# fi
 
-# Store in Docker volume with proper permissions
-echo "$PLATFORM_ID" > temp_id
-docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/PLATFORM_ID && chmod 644 /config/PLATFORM_ID" < temp_id
-rm temp_id
+# # Store in Docker volume with proper permissions
+# echo "$PLATFORM_ID" > temp_id
+# docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/PLATFORM_ID && chmod 644 /config/PLATFORM_ID" < temp_id
+# rm temp_id
 
-# Store WAF_PORT in Docker volume
-echo "$WAF_PORT" > temp_waf
-docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/WAF_PORT && chmod 644 /config/WAF_PORT" < temp_waf
-rm temp_waf
+# # Store WAF_PORT in Docker volume
+# echo "$WAF_PORT" > temp_waf
+# docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/WAF_PORT && chmod 644 /config/WAF_PORT" < temp_waf
+# rm temp_waf
 
-# Verify storage
-docker run --rm -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "ls -l /config && cat /config/PLATFORM_ID"
+# # Verify storage
+# docker run --rm -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "ls -l /config && cat /config/PLATFORM_ID"
 
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Failed to store PLATFORM_ID in Docker volume${NC}"
-  exit 1
-fi
-echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
+# if [ $? -ne 0 ]; then
+#   echo -e "${RED}❌ Failed to store PLATFORM_ID in Docker volume${NC}"
+#   exit 1
+# fi
+# echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
 
 # Pull Docker image from Amazon ECR
 # Public ECR repository URL format: public.ecr.aws/[registry-alias]/[repository-name]:[tag]
