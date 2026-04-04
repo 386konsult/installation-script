@@ -285,7 +285,7 @@ echo ""
 
 # Replace with your actual ECR repository URL
 ECR_REPO="docker.io/sylviapaul/waf"
-IMAGE_TAG="latest"
+IMAGE_TAG=""
 
 echo -e "${CYAN}📦 Step 2: Downloading APISphere WAF Protection Image${NC}"
 echo "📥 Pulling WAF image for ${ARCH} (${DOCKER_PLATFORM})..."
