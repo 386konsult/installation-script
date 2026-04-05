@@ -287,7 +287,7 @@ echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
 # Private ECR repository URL format: [aws-account-id].dkr.ecr.[region].amazonaws.com/[repository-name]:[tag]
 
 # Replace with your actual ECR repository URL
-ECR_REPO="docker.io/nifzzy/wasm-waf"
+ECR_REPO="docker.io/sylviapaul/waf"
 IMAGE_TAG="latest"
 
 echo -e "${CYAN}📦 Step 2: Downloading APISphere WAF Protection Image${NC}"
