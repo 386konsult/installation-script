@@ -170,7 +170,7 @@ fi
 echo ""
 # echo -e "${CYAN}📦 Step 1: Setting up WAF Configuration Service${NC}"
 # FASTAPI_ECR_REPO="docker.io/nifzzy/wasm-waf"
-# FASTAPI_IMAGE_TAG="latest"
+# FASTAPI_IMAGE_TAGs="latest"
 # FASTAPI_CONTAINER_NAME="waf-config-${PLATFORM_ID}"
 
 # Cleanup existing FastAPI container if it exists
@@ -253,31 +253,34 @@ echo ""
 # echo -e "${GREEN}✅ WAF Configuration Service ready on port ${WAF_CONFIG_PORT}${NC}"
 # echo ""
 
+# Config service disabled: still set WAF_CONFIG_PORT for the WAF container if unset
+WAF_CONFIG_PORT="${WAF_CONFIG_PORT:-}"
+
 # Create config volume
-# echo "💾 Creating persistent storage for project ID..."
-# if ! docker volume create apisphere-config-"$PLATFORM_ID" >/dev/null; then
-#   echo -e "${RED}❌ Failed to create Docker volume${NC}"
-#   exit 1
-# fi
+echo "💾 Creating persistent storage for project ID..."
+if ! docker volume create apisphere-config-"$PLATFORM_ID" >/dev/null; then
+  echo -e "${RED}❌ Failed to create Docker volume${NC}"
+  exit 1
+fi
 
-# # Store in Docker volume with proper permissions
-# echo "$PLATFORM_ID" > temp_id
-# docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/PLATFORM_ID && chmod 644 /config/PLATFORM_ID" < temp_id
-# rm temp_id
+# Store in Docker volume with proper permissions
+echo "$PLATFORM_ID" > temp_id
+docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/PLATFORM_ID && chmod 644 /config/PLATFORM_ID" < temp_id
+rm temp_id
 
-# # Store WAF_PORT in Docker volume
-# echo "$WAF_PORT" > temp_waf
-# docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/WAF_PORT && chmod 644 /config/WAF_PORT" < temp_waf
-# rm temp_waf
+# Store WAF_PORT in Docker volume
+echo "$WAF_PORT" > temp_waf
+docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/WAF_PORT && chmod 644 /config/WAF_PORT" < temp_waf
+rm temp_waf
 
-# # Verify storage
-# docker run --rm -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "ls -l /config && cat /config/PLATFORM_ID"
+# Verify storage
+docker run --rm -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "ls -l /config && cat /config/PLATFORM_ID"
 
-# if [ $? -ne 0 ]; then
-#   echo -e "${RED}❌ Failed to store PLATFORM_ID in Docker volume${NC}"
-#   exit 1
-# fi
-# echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
+if [ $? -ne 0 ]; then
+  echo -e "${RED}❌ Failed to store PLATFORM_ID in Docker volume${NC}"
+  exit 1
+fi
+echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
 
 # Pull Docker image from Amazon ECR
 # Public ECR repository URL format: public.ecr.aws/[registry-alias]/[repository-name]:[tag]
@@ -418,12 +421,9 @@ if docker ps | grep -q "apisphere-waf-$PLATFORM_ID"; then
   echo ""
   echo -e "${CYAN}=== Management Commands =====================${NC}"
   echo "  View WAF logs:        docker logs apisphere-waf-$PLATFORM_ID"
-  echo "  View Config logs:     docker logs ${FASTAPI_CONTAINER_NAME}"
   echo "  Stop WAF:             docker stop apisphere-waf-$PLATFORM_ID"
-  echo "  Stop Config Service:  docker stop ${FASTAPI_CONTAINER_NAME}"
   echo "  Restart WAF:          docker start apisphere-waf-$PLATFORM_ID"
   echo "  Remove WAF:           docker rm -f apisphere-waf-$PLATFORM_ID"
-  echo "  Remove Config:        docker rm -f ${FASTAPI_CONTAINER_NAME}"
   echo "  Remove volume:       docker volume rm apisphere-config-$PLATFORM_ID"
   echo ""
   echo -e "${CYAN}=== Persistence Info ========================${NC}"
