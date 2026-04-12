@@ -307,7 +307,23 @@ echo ""
 
 # Backend service check (improved)
 echo "🔍 Verifying backend service on port $BACKEND_PORT..."
-BACKEND_PID=$(sudo lsof -ti tcp:"$BACKEND_PORT" 2>/dev/null)
+
+get_pid_from_port() {
+  local port="$1"
+  local pid
+
+  pid=$(sudo ss -ltnp "( sport = :$port )" 2>/dev/null \
+    | awk -F'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}')
+
+  if [ -z "$pid" ]; then
+    pid=$(sudo lsof -ti tcp:"$port" 2>/dev/null | head -n1)
+  fi
+
+  echo "$pid"
+}
+
+BACKEND_PID=$(get_pid_from_port "$BACKEND_PORT")
+
 if [ -z "$BACKEND_PID" ]; then
   echo -e "${RED}❌ No service detected on port $BACKEND_PORT${NC}"
   echo -e "${YELLOW}Please start your backend application first:${NC}"
@@ -320,14 +336,19 @@ if [ -z "$BACKEND_PID" ]; then
   echo ""
   echo -e "${YELLOW}After starting your app, rerun this script${NC}"
   exit 1
-else
-  # Try to identify backend process type
-  BACKEND_CMD=$(ps -p "$BACKEND_PID" -o comm= 2>/dev/null)
-  if [[ ! "$BACKEND_CMD" =~ (node|python|java|ruby|gunicorn|uwsgi|dotnet|rails|flask|go|php|nginx|httpd|apache2) ]]; then
-    echo -e "${YELLOW}⚠️  Service detected on port $BACKEND_PORT, but not a typical backend process ($BACKEND_CMD)${NC}"
+fi
+
+BACKEND_CMD=$(ps -p "$BACKEND_PID" -o comm= 2>/dev/null | tr -d '[:space:]')
+
+if [ -n "$BACKEND_CMD" ]; then
+  if [[ ! "$BACKEND_CMD" =~ ^(node|next-server|python|python3|java|ruby|gunicorn|uwsgi|dotnet|rails|flask|go|php|nginx|httpd|apache2)$ ]]; then
+    echo -e "${YELLOW}⚠️  Service detected on port $BACKEND_PORT, but process looks unusual ($BACKEND_CMD)${NC}"
     echo -e "${YELLOW}Proceeding, but please ensure your backend is running as expected.${NC}"
   fi
+
   echo -e "${GREEN}✅ Backend service confirmed on port $BACKEND_PORT ($BACKEND_CMD)${NC}"
+else
+  echo -e "${GREEN}✅ Backend service confirmed on port $BACKEND_PORT${NC}"
 fi
 
 # Port conflict check for WAF_PORT (matches .bat logic)
