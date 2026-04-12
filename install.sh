@@ -398,12 +398,15 @@ fi
 
 # Cleanup existing containers
 echo "🧹 Removing old WAF containers (if any)..."
-docker rm -f apisphere-waf-"$PLATFORM_ID" >/dev/null 2>&1
+docker rm -f apisphere-waf-"$PLATFORM_ID" >/dev/null 2>&1 || true
 
 echo -e "${CYAN}📦 Step 3: Starting APISphere WAF Protection${NC}"
 echo "🛡️ Starting WAF protection service..."
-docker run -d \
-  --name apisphere-waf-"$PLATFORM_ID" \
+
+CONTAINER_NAME="apisphere-waf-$PLATFORM_ID"
+
+CONTAINER_ID=$(docker run -d \
+  --name "$CONTAINER_NAME" \
   -v apisphere-config-"$PLATFORM_ID":/app/config:ro \
   -e PLATFORM_ID="$PLATFORM_ID" \
   -e BACKEND_HOST=host.docker.internal \
@@ -412,17 +415,24 @@ docker run -d \
   -e WAF_CONFIG_PORT="$WAF_CONFIG_PORT" \
   --add-host=host.docker.internal:host-gateway \
   -p "$WAF_PORT":"$WAF_PORT" \
-  $ECR_REPO:$IMAGE_TAG >/dev/null 
+  "$ECR_REPO:$IMAGE_TAG" 2>&1)
 
-# Verify startup
+RUN_EXIT_CODE=$?
+
+if [ $RUN_EXIT_CODE -ne 0 ] || [ -z "$CONTAINER_ID" ]; then
+  echo -e "${RED}❌ Failed to start WAF container${NC}"
+  echo "$CONTAINER_ID"
+  exit 1
+fi
+
 echo "⏳ Waiting for container initialization (5 seconds)..."
 sleep 5
 
-# Verify PLATFORM_ID inside the running container
-docker exec apisphere-waf-"$PLATFORM_ID" ls -l /app/config
-docker exec apisphere-waf-"$PLATFORM_ID" cat /app/config/PLATFORM_ID
+if docker ps --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
+  echo "🔍 Verifying container config..."
+  docker exec "$CONTAINER_NAME" ls -l /app/config || true
+  docker exec "$CONTAINER_NAME" cat /app/config/PLATFORM_ID || true
 
-if docker ps | grep -q "apisphere-waf-$PLATFORM_ID"; then
   echo -e "${GREEN}✅ WAF started successfully${NC}"
   echo ""
   echo -e "${GREEN}🎉 APISphere WAF Setup Complete!${NC}"
@@ -441,25 +451,24 @@ if docker ps | grep -q "apisphere-waf-$PLATFORM_ID"; then
   echo "    curl 'http://localhost:$WAF_PORT/?exec=/bin/bash'"
   echo ""
   echo -e "${CYAN}=== Management Commands =====================${NC}"
-  echo "  View WAF logs:        docker logs apisphere-waf-$PLATFORM_ID"
-  echo "  Stop WAF:             docker stop apisphere-waf-$PLATFORM_ID"
-  echo "  Restart WAF:          docker start apisphere-waf-$PLATFORM_ID"
-  echo "  Remove WAF:           docker rm -f apisphere-waf-$PLATFORM_ID"
-  echo "  Remove volume:       docker volume rm apisphere-config-$PLATFORM_ID"
-  echo ""
-  echo -e "${CYAN}=== Persistence Info ========================${NC}"
-  echo "  PLATFORM_ID is stored in Docker volume:"
-  echo "    apisphere-config-$PLATFORM_ID"
+  echo "  View WAF logs:        docker logs $CONTAINER_NAME"
+  echo "  Stop WAF:             docker stop $CONTAINER_NAME"
+  echo "  Restart WAF:          docker start $CONTAINER_NAME"
+  echo "  Remove WAF:           docker rm -f $CONTAINER_NAME"
+  echo "  Remove volume:        docker volume rm apisphere-config-$PLATFORM_ID"
   echo ""
   echo -e "${GREEN}All traffic should now go through the protected port!${NC}"
 else
   echo -e "${RED}❌ WAF failed to start${NC}"
+  echo ""
+  echo "Container logs:"
+  docker logs "$CONTAINER_NAME" 2>&1 || true
+  echo ""
   echo "Troubleshooting steps:"
   echo "  1. Check container logs:"
-  echo "     ${CYAN}docker logs apisphere-waf-$PLATFORM_ID${NC}"
+  echo "     ${CYAN}docker logs $CONTAINER_NAME${NC}"
   echo "  2. Verify port availability:"
-  echo "     ${CYAN}lsof -i :$WAF_PORT${NC}"
-  echo "  3. Check Docker resource allocation"
-  echo "  4. Ensure backend is still running"
+  echo "     ${CYAN}ss -ltnp '( sport = :$WAF_PORT )'${NC}"
+  echo "  3. Ensure backend is still running"
   exit 1
 fi
