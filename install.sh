@@ -418,3 +418,7 @@ echo -e "  ${CYAN}→ Starting stub container on port 8081...${NC}"
 docker run -d --restart=always --network="host" -v /data/waf:/data --name waf-stub nifzzy/waf-stub:latest >/dev/null 2>&1
 if [[ $? -ne 0 ]]; then
     echo -e "${RED}[ERROR] Failed to start stub container.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Heimdall stub container started successfully on port 8081.${NC}"
