@@ -3,6 +3,8 @@
 # APISphere WAF Installation Script for Mac/Linux
 # Uses Docker volumes for persistent PLATFORM_ID storage
 
+set -e
+
 echo "🔧 APISphere WAF Installation Starting..."
 
 # Colors for output
@@ -11,6 +13,10 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+echo -e "\n${CYAN}============================================================${NC}"
+echo -e "${CYAN}         HEIMDALL WAF INSTALLATION SCRIPT${NC}"
+echo -e "${CYAN}============================================================${NC}\n"
 
 # Check arguments
 if [[ $# -lt 2 ]]; then
@@ -45,6 +51,10 @@ echo "  WAF port:     ${CYAN}$WAF_PORT${NC}"
 echo ""
 
 # Docker availability check
+# ------------------------------------------------------------
+# Docker check
+# ------------------------------------------------------------
+echo -e "${CYAN}[CHECK] Verifying Docker installation...${NC}"
 if ! command -v docker >/dev/null 2>&1; then
   echo -e "${RED}❌ Docker is not installed or not available in PATH${NC}"
   echo -e "${YELLOW}🔧 Attempting to install Docker...${NC}"
@@ -165,93 +175,6 @@ elif [[ "$ARCH" == "x86_64" ]]; then
 else
   DOCKER_PLATFORM="linux/amd64"  # Default fallback
 fi
-
-# Pull and run FastAPI WAF Config App to get WAF_CONFIG_PORT
-echo ""
-# echo -e "${CYAN}📦 Step 1: Setting up WAF Configuration Service${NC}"
-# FASTAPI_ECR_REPO="docker.io/nifzzy/wasm-waf"
-# FASTAPI_IMAGE_TAGs="latest"
-# FASTAPI_CONTAINER_NAME="waf-config-${PLATFORM_ID}"
-
-# Cleanup existing FastAPI container if it exists
-# echo "🧹 Cleaning up existing config containers (if any)..."
-# docker stop ${FASTAPI_CONTAINER_NAME} >/dev/null 2>&1
-# docker rm ${FASTAPI_CONTAINER_NAME} >/dev/null 2>&1
-
-# Pull FastAPI config app
-# echo "📥 Pulling WAF Configuration Service image..."
-# if ! docker pull --platform ${DOCKER_PLATFORM} ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG} >/dev/null 2>&1; then
-#   echo -e "${RED}❌ Failed to pull WAF Configuration Service from ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG}${NC}"
-#   echo -e "${YELLOW}Please check your internet connection and ECR access${NC}"
-#   exit 1
-# fi
-# echo -e "${GREEN}✅ Configuration Service image downloaded${NC}"
-
-# Run FastAPI config app with host networking to auto-detect available port
-# echo "🚀 Starting WAF Configuration Service..."
-# docker run -d \
-#   --name ${FASTAPI_CONTAINER_NAME} \
-#   --network host \
-#   --restart unless-stopped \
-#   ${FASTAPI_ECR_REPO}:${FASTAPI_IMAGE_TAG} >/dev/null 2>&1
-
-# if [ $? -ne 0 ]; then
-#   echo -e "${RED}❌ Failed to start WAF Configuration Service${NC}"
-#   exit 1
-# fi
-
-# Wait for container to start and detect the port
-# echo "⏳ Waiting for Configuration Service to initialize and detect port..."
-# MAX_WAIT=30
-# WAIT_COUNT=0
-# WAF_CONFIG_PORT=""
-
-# while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-#   # Check if container is still running
-#   if ! docker ps --format '{{.Names}}' | grep -q "^${FASTAPI_CONTAINER_NAME}$"; then
-#     echo -e "${RED}❌ Configuration Service container stopped unexpectedly${NC}"
-#     echo "Container logs:"
-#     docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | tail -20
-#     exit 1
-#   fi
-  
-#   # Try to extract port from logs
-#   # Look for PORT= format first, then fallback to "Found available port: X"
-#   PORT_LINE=$(docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | grep -E "PORT=[0-9]+" | head -1)
-  
-#   if [ -n "$PORT_LINE" ]; then
-#     # Extract port number from PORT=8086 format
-#     WAF_CONFIG_PORT=$(echo "$PORT_LINE" | sed -n 's/.*PORT=\([0-9]*\).*/\1/p')
-#   else
-#     # Fallback: look for "Found available port: X" message
-#     PORT_LINE=$(docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | grep -E "Found available port: [0-9]+" | head -1)
-#     if [ -n "$PORT_LINE" ]; then
-#       WAF_CONFIG_PORT=$(echo "$PORT_LINE" | sed -n 's/.*Found available port: \([0-9]*\).*/\1/p')
-#     fi
-#   fi
-  
-#   if [ -n "$WAF_CONFIG_PORT" ]; then
-#     echo -e "${GREEN}✅ Configuration Service running on port: ${WAF_CONFIG_PORT}${NC}"
-#     break
-#   fi
-  
-#   sleep 1
-#   WAIT_COUNT=$((WAIT_COUNT + 1))
-# done
-
-# if [ -z "$WAF_CONFIG_PORT" ]; then
-#   echo -e "${RED}❌ Could not detect port from Configuration Service logs${NC}"
-#   echo "Container logs:"
-#   docker logs ${FASTAPI_CONTAINER_NAME} 2>&1 | tail -30
-#   echo ""
-#   echo -e "${YELLOW}Troubleshooting:${NC}"
-#   echo "  1. Check logs: docker logs ${FASTAPI_CONTAINER_NAME}"
-#   echo "  2. Verify container is running: docker ps | grep ${FASTAPI_CONTAINER_NAME}"
-#   exit 1
-# fi
-
-# echo -e "${GREEN}✅ WAF Configuration Service ready on port ${WAF_CONFIG_PORT}${NC}"
-# echo ""
 
 # Config service disabled: still set WAF_CONFIG_PORT for the WAF container if unset
 WAF_CONFIG_PORT="${WAF_CONFIG_PORT:-}"
@@ -472,3 +395,26 @@ else
   echo "  3. Ensure backend is still running"
   exit 1
 fi
+
+# ------------------------------------------------------------
+# Stub container (IP blacklist + rate limiting)
+# ------------------------------------------------------------
+echo -e "${CYAN}[STEP 2/4] Installing Heimdall stub container...${NC}"
+sudo mkdir -p /data/waf
+sudo chmod 777 /data/waf
+
+echo -e "  ${CYAN}→ Pulling stub image from Docker Hub...${NC}"
+docker pull nifzzy/waf-stub:latest
+if [[ $? -ne 0 ]]; then
+    echo -e "${RED}[ERROR] Failed to pull stub image.${NC}"
+    exit 1
+fi
+
+echo -e "  ${CYAN}→ Removing any existing stub container...${NC}"
+docker stop waf-stub >/dev/null 2>&1 || true
+docker rm waf-stub >/dev/null 2>&1 || true
+
+echo -e "  ${CYAN}→ Starting stub container on port 8081...${NC}"
+docker run -d --restart=always --network="host" -v /data/waf:/data --name waf-stub nifzzy/waf-stub:latest >/dev/null 2>&1
+if [[ $? -ne 0 ]]; then
+    echo -e "${RED}[ERROR] Failed to start stub container.${NC}"
