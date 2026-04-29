@@ -104,100 +104,8 @@ echo [INFO] Architecture: %PROCESSOR_ARCHITECTURE%, Docker Platform: %DOCKER_PLA
 
 REM Pull and run FastAPI WAF Config App to get WAF_CONFIG_PORT
 echo.
-echo [STEP 1] Setting up WAF Configuration Service
-set FASTAPI_ECR_REPO=public.ecr.aws/u2u6i4x5/fastapi-waf-app
-set FASTAPI_IMAGE_TAG=latest
-set FASTAPI_CONTAINER_NAME=waf-config-%PLATFORM_ID%
-
-REM Cleanup existing FastAPI container if it exists
-echo [CLEANUP] Cleaning up existing config containers (if any)...
-docker stop %FASTAPI_CONTAINER_NAME% >nul 2>&1
-docker rm %FASTAPI_CONTAINER_NAME% >nul 2>&1
-
-REM Pull FastAPI config app
-echo [PULL] Pulling WAF Configuration Service image...
-docker pull --platform %DOCKER_PLATFORM% %FASTAPI_ECR_REPO%:%FASTAPI_IMAGE_TAG% >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Failed to pull WAF Configuration Service from %FASTAPI_ECR_REPO%:%FASTAPI_IMAGE_TAG%
-    echo [TIP]  Please check your internet connection and ECR access
-    exit /b 1
-)
-echo [OK] Configuration Service image downloaded
-
-REM Run FastAPI config app with host networking to auto-detect available port
-echo [START] Starting WAF Configuration Service...
-docker run -d ^
-    --name %FASTAPI_CONTAINER_NAME% ^
-    --network host ^
-    --restart unless-stopped ^
-    %FASTAPI_ECR_REPO%:%FASTAPI_IMAGE_TAG% >nul 2>&1
-
-if errorlevel 1 (
-    echo [ERROR] Failed to start WAF Configuration Service
-    exit /b 1
-)
-
-REM Wait for container to start and detect the port
-echo [WAIT] Waiting for Configuration Service to initialize and detect port...
-set MAX_WAIT=30
-set WAIT_COUNT=0
-set WAF_CONFIG_PORT=
-
-:WAIT_FOR_PORT
-if %WAIT_COUNT% geq %MAX_WAIT% goto PORT_TIMEOUT
-
-REM Check if container is still running
-docker ps --format "{{.Names}}" | findstr /x "%FASTAPI_CONTAINER_NAME%" >nul
-if errorlevel 1 (
-    echo [ERROR] Configuration Service container stopped unexpectedly
-    echo Container logs:
-    docker logs %FASTAPI_CONTAINER_NAME% 2>&1 | powershell -Command "$input | Select-Object -Last 20"
-    exit /b 1
-)
-
-REM Try to extract port from logs
-REM Save logs to temp file for parsing
-docker logs %FASTAPI_CONTAINER_NAME% 2>&1 > temp_config_logs.txt
-
-REM Look for PORT= format first
-for /f "tokens=2 delims==" %%p in ('findstr /r "PORT=[0-9]" temp_config_logs.txt') do (
-    set WAF_CONFIG_PORT=%%p
-    goto PORT_FOUND
-)
-
-REM Fallback: look for "Found available port: X" message
-for /f "tokens=4" %%p in ('findstr "Found available port:" temp_config_logs.txt') do (
-    set WAF_CONFIG_PORT=%%p
-    goto PORT_FOUND
-)
-
-del temp_config_logs.txt >nul 2>&1
-
-timeout /t 1 /nobreak >nul
-set /a WAIT_COUNT+=1
-goto WAIT_FOR_PORT
-
-:PORT_FOUND
-del temp_config_logs.txt >nul 2>&1
-echo [OK] Configuration Service running on port: %WAF_CONFIG_PORT%
-echo.
-goto PORT_DETECTED
-
-:PORT_TIMEOUT
-del temp_config_logs.txt >nul 2>&1
-echo [ERROR] Could not detect port from Configuration Service logs
-echo Container logs:
-docker logs %FASTAPI_CONTAINER_NAME% 2>&1 | powershell -Command "$input | Select-Object -Last 30"
-echo.
-echo [TROUBLESHOOT]
-echo   1. Check logs: docker logs %FASTAPI_CONTAINER_NAME%
-echo   2. Verify container is running: docker ps ^| findstr %FASTAPI_CONTAINER_NAME%
-exit /b 1
-
-:PORT_DETECTED
-echo [OK] WAF Configuration Service ready on port %WAF_CONFIG_PORT%
-echo.
-
+echo [STEP 1] Config service skipped (using fallback port 8083).
+set WAF_CONFIG_PORT=8083
 echo [VOLUME] Creating persistent storage for project ID...
 docker volume create apisphere-config-%PLATFORM_ID% >nul 2>&1
 
@@ -225,8 +133,46 @@ REM Public ECR repository URL format: public.ecr.aws/[registry-alias]/[repositor
 REM Private ECR repository URL format: [aws-account-id].dkr.ecr.[region].amazonaws.com/[repository-name]:[tag]
 
 REM Replace with your actual ECR repository URL
-set ECR_REPO=public.ecr.aws/u2u6i4x5/waf-image
+set ECR_REPO=nifzzy/wasm-waf
 set IMAGE_TAG=latest
+REM ------------------------------------------------------------
+REM Heimdall stub container (blacklist + rate limits)
+REM ------------------------------------------------------------
+echo.
+echo [STEP 2] Installing Heimdall stub container...
+
+if not exist "C:\data\waf" mkdir C:\data\waf
+
+echo   - Pulling stub image from Docker Hub...
+docker pull nifzzy/waf-stub:latest
+
+echo   - Removing any existing stub container...
+docker stop waf-stub >nul 2>&1
+docker rm waf-stub >nul 2>&1
+
+echo   - Starting stub container on port 8081...
+docker run -d --restart=always -p 8081:8081 -v C:\data\waf:/data --name waf-stub nifzzy/waf-stub:latest
+
+echo [OK] Stub container started on port 8081
+REM ============================================================
+REM Report stub URL to backend
+REM ============================================================
+echo.
+echo [INFO] Detecting public IP address...
+for /f "delims=" %%i in ('curl -s ifconfig.me') do set PUBLIC_IP=%%i
+if defined PUBLIC_IP (
+    echo [OK] Public IP detected: %PUBLIC_IP%
+    echo [POST] Updating backend with stub URL...
+    powershell -Command "Invoke-RestMethod -Uri 'http://localhost:%BACKEND_PORT%/api/v1/platforms/%PLATFORM_ID%/update-stub-url/' -Method POST -Headers @{'Content-Type'='application/json'} -Body '{\"stub_url\":\"http://%PUBLIC_IP%:8081\"}'"
+    if errorlevel 1 (
+        echo [WARN] Failed to update backend. You may need to set stub_url manually in Django admin.
+    ) else (
+        echo [OK] Backend updated. Stub URL: http://%PUBLIC_IP%:8081
+    )
+) else (
+    echo [WARN] Could not detect public IP. Please set platform.stub_url manually in Django admin.
+)
+echo.
 
 echo [PULL] Pulling WAF image for %PROCESSOR_ARCHITECTURE% (%DOCKER_PLATFORM%)...
 docker pull --platform %DOCKER_PLATFORM% %ECR_REPO%:%IMAGE_TAG% >nul 2>&1

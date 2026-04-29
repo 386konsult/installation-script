@@ -177,7 +177,7 @@ else
 fi
 
 # Config service disabled: still set WAF_CONFIG_PORT for the WAF container if unset
-WAF_CONFIG_PORT="${WAF_CONFIG_PORT:-}"
+WAF_CONFIG_PORT=8083
 
 # Create config volume
 echo "💾 Creating persistent storage for project ID..."
@@ -210,7 +210,7 @@ echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
 # Private ECR repository URL format: [aws-account-id].dkr.ecr.[region].amazonaws.com/[repository-name]:[tag]
 
 # Replace with your actual ECR repository URL
-ECR_REPO="docker.io/sylviapaul/waf"
+ECR_REPO="nifzzy/wasm-waf"
 IMAGE_TAG="latest"
 
 echo -e "${CYAN}📦 Step 2: Downloading APISphere WAF Protection Image${NC}"
@@ -422,3 +422,25 @@ if [[ $? -ne 0 ]]; then
 fi
 
 echo -e "${GREEN}✅ Heimdall stub container started successfully on port 8081.${NC}"
+# ============================================================
+# Report stub URL to backend
+# ============================================================
+echo ""
+echo -e "${CYAN}[INFO] Detecting public IP address...${NC}"
+PUBLIC_IP=$(curl -s ifconfig.me)
+if [[ -n "$PUBLIC_IP" ]]; then
+    echo -e "${GREEN}[OK] Public IP detected: $PUBLIC_IP${NC}"
+    echo -e "${CYAN}[POST] Updating backend with stub URL...${NC}"
+    curl -X POST "http://localhost:$BACKEND_PORT/api/v1/platforms/$PLATFORM_ID/update-stub-url/" \
+        -H "Content-Type: application/json" \
+        -d "{\"stub_url\": \"http://$PUBLIC_IP:8081\"}" \
+        -s -o /dev/null
+    if [[ $? -eq 0 ]]; then
+        echo -e "${GREEN}[OK] Backend updated. Stub URL: http://$PUBLIC_IP:8081${NC}"
+    else
+        echo -e "${YELLOW}[WARN] Failed to update backend. You may need to set stub_url manually in Django admin.${NC}"
+    fi
+else
+    echo -e "${YELLOW}[WARN] Could not detect public IP. Please set platform.stub_url manually in Django admin.${NC}"
+fi
+echo ""
