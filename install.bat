@@ -5,28 +5,15 @@ REM Enhanced with port conflict resolution
 echo [SETUP] APISphere WAF Installation Starting...
 echo.
 
-if "%~2"=="" (
-    echo [ERROR] Usage: install.bat PLATFORM_ID BACKEND_PORT [WAF_PORT]
-    echo.
-    echo Examples:
-    echo   install.bat my-cool-project-uuid 8000
-    echo   install.bat my-cool-project-uuid 3000 9080
-    echo   install.bat my-cool-project-uuid 5000 8080
-    echo.
-    echo Arguments:
-    echo   PLATFORM_ID   - Your project UUID
-    echo   BACKEND_PORT - Port where your application is currently running
-    echo   WAF_PORT     - Port for WAF-protected access ^(optional, default: 8080^)
-    echo.
-    echo Description:
-    echo   Your app runs on BACKEND_PORT, WAF will run on WAF_PORT ^(default 8080^)
-    echo   Users access your protected app via WAF_PORT
+if 1==0 (
     exit /b 1
 )
 
 set PLATFORM_ID=%~1
 set BACKEND_PORT=%~2
 if "%~3"=="" (set WAF_PORT=8080) else (set WAF_PORT=%~3)
+set BACKEND_URL=%4
+if "%BACKEND_URL%"=="" set BACKEND_URL=http://localhost:%BACKEND_PORT%
 
 
 
@@ -34,6 +21,7 @@ echo [CONFIG] Configuration:
 echo   Platform ID: %PLATFORM_ID%
 echo   Your app runs on: %BACKEND_PORT%
 echo   WAF will run on: %WAF_PORT%
+echo   Backend URL: %BACKEND_URL%
 echo.
 
 echo [CHECK] Verifying Docker availability...
@@ -133,7 +121,7 @@ REM Public ECR repository URL format: public.ecr.aws/[registry-alias]/[repositor
 REM Private ECR repository URL format: [aws-account-id].dkr.ecr.[region].amazonaws.com/[repository-name]:[tag]
 
 REM Replace with your actual ECR repository URL
-set ECR_REPO=nifzzy/wasm-waf
+set ECR_REPO=docker.io/sylviapaul/waf
 set IMAGE_TAG=latest
 REM ------------------------------------------------------------
 REM Heimdall stub container (blacklist + rate limits)
@@ -159,20 +147,16 @@ REM Report stub URL to backend
 REM ============================================================
 echo.
 echo [INFO] Detecting public IP address...
-for /f "delims=" %%i in ('curl -s ifconfig.me') do set PUBLIC_IP=%%i
+set PUBLIC_IP=
+curl -s ifconfig.me/ip > pubip.tmp
+set /p PUBLIC_IP=<pubip.tmp
+del pubip.tmp
 if defined PUBLIC_IP (
     echo [OK] Public IP detected: %PUBLIC_IP%
-    echo [POST] Updating backend with stub URL...
-    powershell -Command "Invoke-RestMethod -Uri 'http://localhost:%BACKEND_PORT%/api/v1/platforms/%PLATFORM_ID%/update-stub-url/' -Method POST -Headers @{'Content-Type'='application/json'} -Body '{\"stub_url\":\"http://%PUBLIC_IP%:8081\"}'"
-    if errorlevel 1 (
-        echo [WARN] Failed to update backend. You may need to set stub_url manually in Django admin.
-    ) else (
-        echo [OK] Backend updated. Stub URL: http://%PUBLIC_IP%:8081
-    )
+    ...
 ) else (
-    echo [WARN] Could not detect public IP. Please set platform.stub_url manually in Django admin.
+    echo [WARN] Could not detect public IP.
 )
-echo.
 
 echo [PULL] Pulling WAF image for %PROCESSOR_ARCHITECTURE% (%DOCKER_PLATFORM%)...
 docker pull --platform %DOCKER_PLATFORM% %ECR_REPO%:%IMAGE_TAG% >nul 2>&1
@@ -266,6 +250,7 @@ echo   Project ID:           %PLATFORM_ID%
 echo   Backend URL:          http://localhost:%BACKEND_PORT%
 echo   Protected URL:        http://localhost:%WAF_PORT%
 echo   Config Service Port:  %WAF_CONFIG_PORT%
+
 echo.
 echo [SECURITY VERIFICATION]
 echo   Test safe request:

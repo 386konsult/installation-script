@@ -19,22 +19,16 @@ echo -e "${CYAN}         HEIMDALL WAF INSTALLATION SCRIPT${NC}"
 echo -e "${CYAN}============================================================${NC}\n"
 
 # Check arguments
+# Check arguments – now with optional 4th argument BACKEND_URL
 if [[ $# -lt 2 ]]; then
-  echo -e "${RED}❌ Usage: ./install.sh PLATFORM_ID BACKEND_PORT [WAF_PORT]${NC}"
+  echo -e "${RED}❌ Usage: ./install.sh PLATFORM_ID BACKEND_PORT [WAF_PORT] [BACKEND_URL]${NC}"
   echo ""
-  echo "Examples:"
-  echo "  ./install.sh my-project-uuid 8000"
-  echo "  ./install.sh my-project-uuid 3000 9080"
-  echo "  ./install.sh my-project-uuid 5000 8080"
+  echo "  PLATFORM_ID    - Your project UUID"
+  echo "  BACKEND_PORT   - Port where local backend listens (only used for local check)"
+  echo "  WAF_PORT       - Port for WAF-protected access (default: 8080)"
+  echo "  BACKEND_URL    - Full API URL of your backend (e.g., https://staging.breachnet.io/api/v1)"
+  echo "                   If not provided, falls back to http://localhost:BACKEND_PORT"
   echo ""
-  echo "Arguments:"
-  echo "  ${CYAN}PLATFORM_ID${NC}    - Your project UUID"
-  echo "  ${CYAN}BACKEND_PORT${NC}  - Port where your application is running"
-  echo "  ${CYAN}WAF_PORT${NC}      - Port for WAF-protected access (default: 8080)"
-  echo ""
-  echo "Description:"
-  echo "  WAF creates a protective layer in front of your application"
-  echo "  All traffic should go through WAF_PORT for security protection"
   exit 1
 fi
 
@@ -42,12 +36,14 @@ fi
 PLATFORM_ID="$1"
 BACKEND_PORT="$2"
 WAF_PORT="${3:-8080}"
+BACKEND_URL="${4:-http://localhost:$BACKEND_PORT}"
 
 
 echo -e "${GREEN}⚙️ Configuration:${NC}"
 echo "  Platform ID:   ${CYAN}$PLATFORM_ID${NC}"
-echo "  Backend port: ${CYAN}$BACKEND_PORT${NC}"
-echo "  WAF port:     ${CYAN}$WAF_PORT${NC}"
+echo "  Backend port:  ${CYAN}$BACKEND_PORT${NC}"
+echo "  WAF port:      ${CYAN}$WAF_PORT${NC}"
+echo "  Backend URL:   ${CYAN}$BACKEND_URL${NC}"
 echo ""
 
 # Docker availability check
@@ -176,7 +172,7 @@ else
   DOCKER_PLATFORM="linux/amd64"  # Default fallback
 fi
 
-# Config service disabled: still set WAF_CONFIG_PORT for the WAF container if unset
+# Config service is optional – fallback port for main WAF (unused)
 WAF_CONFIG_PORT=8083
 
 # Create config volume
@@ -210,7 +206,7 @@ echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
 # Private ECR repository URL format: [aws-account-id].dkr.ecr.[region].amazonaws.com/[repository-name]:[tag]
 
 # Replace with your actual ECR repository URL
-ECR_REPO="nifzzy/wasm-waf"
+ECR_REPO="docker.io/sylviapaul/waf"
 IMAGE_TAG="latest"
 
 echo -e "${CYAN}📦 Step 2: Downloading APISphere WAF Protection Image${NC}"
@@ -427,11 +423,11 @@ echo -e "${GREEN}✅ Heimdall stub container started successfully on port 8081.$
 # ============================================================
 echo ""
 echo -e "${CYAN}[INFO] Detecting public IP address...${NC}"
-PUBLIC_IP=$(curl -s ifconfig.me)
+PUBLIC_IP=$(curl -s ifconfig.me/ip)
 if [[ -n "$PUBLIC_IP" ]]; then
     echo -e "${GREEN}[OK] Public IP detected: $PUBLIC_IP${NC}"
-    echo -e "${CYAN}[POST] Updating backend with stub URL...${NC}"
-    curl -X POST "http://localhost:$BACKEND_PORT/api/v1/platforms/$PLATFORM_ID/update-stub-url/" \
+    echo -e "${CYAN}[POST] Updating backend ($BACKEND_URL) with stub URL...${NC}"
+    curl -X POST "$BACKEND_URL/api/v1/platforms/$PLATFORM_ID/update-stub-url/" \
         -H "Content-Type: application/json" \
         -d "{\"stub_url\": \"http://$PUBLIC_IP:8081\"}" \
         -s -o /dev/null
