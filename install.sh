@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # ============================================================
 #  APISphere WAF + Heimdall Stub Installer for Linux/macOS
 #  (c) Smartcomply
@@ -18,7 +17,7 @@ echo -e "${CYAN}   APISphere WAF + HEIMDALL STUB INSTALLATION${NC}"
 echo -e "${CYAN}============================================================${NC}\n"
 
 # ----------------------------------------------------------------------
-# Parse arguments – now with --backend-url and --stub-ip
+# Parse arguments
 # ----------------------------------------------------------------------
 POSITIONAL=()
 BACKEND_URL=""
@@ -77,24 +76,73 @@ fi
 echo ""
 
 # ------------------------------------------------------------
-# Docker availability & status (unchanged – keep all original code)
+# Docker availability & status
 # ------------------------------------------------------------
 echo -e "${CYAN}[CHECK] Verifying Docker installation...${NC}"
 if ! command -v docker >/dev/null 2>&1; then
-    # ... (keep your full Docker installation logic here – it's long but unchanged)
-    # To save space, I'll just indicate that the original block should remain.
-    echo -e "${RED}Docker not found. Please install Docker manually.${NC}"
-    exit 1
+    echo -e "${RED}❌ Docker is not installed or not available in PATH${NC}"
+    echo -e "${YELLOW}🔧 Attempting to install Docker...${NC}"
+    
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS installation
+        if command -v brew >/dev/null 2>&1; then
+            brew install --cask docker
+            echo -e "${GREEN}✅ Docker Desktop installed via Homebrew${NC}"
+            echo -e "${YELLOW}⚠️  Please start Docker Desktop from Applications, then rerun this script${NC}"
+            exit 0
+        else
+            echo -e "${RED}[ERROR] Homebrew not found. Please install Docker manually.${NC}"
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux – detect package manager
+        if command -v apt-get >/dev/null 2>&1; then
+            # Ubuntu/Debian
+            sudo apt-get update
+            sudo apt-get install -y ca-certificates curl gnupg lsb-release
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            sudo systemctl start docker
+            sudo systemctl enable docker
+            sudo usermod -aG docker "$USER"
+            echo -e "${GREEN}✅ Docker installed. Please log out and back in, then rerun this script.${NC}"
+            exit 0
+        elif command -v yum >/dev/null 2>&1; then
+            # CentOS/RHEL
+            sudo yum install -y yum-utils
+            sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+            sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            sudo systemctl start docker
+            sudo systemctl enable docker
+            sudo usermod -aG docker "$USER"
+            echo -e "${GREEN}✅ Docker installed. Please log out and back in, then rerun this script.${NC}"
+            exit 0
+        else
+            echo -e "${RED}[ERROR] Unsupported Linux distribution. Please install Docker manually.${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${RED}[ERROR] Unsupported OS. Please install Docker manually.${NC}"
+        exit 1
+    fi
 fi
 echo -e "${GREEN}✅ Docker is available${NC}"
 
 echo -e "${CYAN}[CHECK] Verifying Docker status...${NC}"
-if ! sudo docker info >/dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️ Docker not responding, trying to start...${NC}"
-    sudo systemctl start docker
-    sleep 2
-    if ! sudo docker info >/dev/null 2>&1; then
-        echo -e "${RED}❌ Docker still not running${NC}"
+if ! docker info >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️ Docker is installed but not running. Attempting to start...${NC}"
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        sudo systemctl start docker
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        open -a Docker
+        echo -e "${YELLOW}Waiting for Docker to start...${NC}"
+        sleep 10
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo -e "${RED}❌ Could not start Docker automatically. Please start Docker Desktop manually and rerun.${NC}"
         exit 1
     fi
 fi
@@ -133,7 +181,7 @@ echo -e "${GREEN}✅ Project ID stored${NC}\n"
 # ------------------------------------------------------------
 echo -e "${CYAN}[CHECK] Verifying backend on port $BACKEND_PORT...${NC}"
 if ! lsof -ti tcp:"$BACKEND_PORT" >/dev/null 2>&1; then
-    echo -e "${RED}❌ No service detected on port $BACKEND_PORT${NC}"
+    echo -e "${RED}❌ No service detected on port $BACKEND_PORT. Make sure your backend is running.${NC}"
     exit 1
 fi
 echo -e "${GREEN}✅ Backend service confirmed${NC}\n"
@@ -153,6 +201,7 @@ docker stop waf-stub >/dev/null 2>&1 || true
 docker rm waf-stub >/dev/null 2>&1 || true
 
 echo "  → Starting stub container with environment variables..."
+
 # Adapt BACKEND_URL for Docker networking inside container
 STUB_BACKEND_URL="$BACKEND_URL"
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -193,10 +242,10 @@ fi
 echo ""
 
 # ------------------------------------------------------------
-# Main WAF image pull (unchanged)
+# Main WAF image pull
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 3] Downloading main WAF image...${NC}"
-ECR_REPO="nifzzy/wasm-waf"
+ECR_REPO="docker.io/sylviapaul/waf"
 IMAGE_TAG="latest"
 
 echo "  → Pulling WAF image for $ARCH ($DOCKER_PLATFORM)..."
@@ -211,7 +260,7 @@ echo -e "${GREEN}✅ Main WAF image downloaded${NC}\n"
 # ------------------------------------------------------------
 echo -e "${CYAN}[PORT] Checking port availability for main WAF...${NC}"
 if lsof -i tcp:"$WAF_PORT" >/dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  Port $WAF_PORT is already in use. Attempting to resolve...${NC}"
+    echo -e "${YELLOW}⚠️ Port $WAF_PORT is already in use. Attempting to resolve...${NC}"
     CONFLICT_CID=$(docker ps --format "{{.ID}} {{.Ports}}" | grep ":$WAF_PORT" | awk '{print $1}')
     if [ -n "$CONFLICT_CID" ]; then
         echo "  → Stopping conflicting container $CONFLICT_CID"
