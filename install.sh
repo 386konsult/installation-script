@@ -1,442 +1,343 @@
-#!/bin/bash
+from flask import Flask, request, jsonify
+from time import time
+import requests
+import json
+import os
+import ast
+import logging
+import time as time_module
+import socket   # <-- added for host detection
 
-# APISphere WAF Installation Script for Mac/Linux
-# Uses Docker volumes for persistent PLATFORM_ID storage
+app = Flask(__name__)
 
-set -e
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-echo "🔧 APISphere WAF Installation Starting..."
+DATA_FILE = "/data/rules.json"
+blacklist = set()
+alert_rate_limits = {}
+endpoint_rules = {}
+endpoint_counters = {}
 
-# Colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+# Default trigger URL (original, unchanged)
+DJANGO_TRIGGER_URL = "http://host.docker.internal:8000/api/v1/waf/backendalert/"
 
-echo -e "\n${CYAN}============================================================${NC}"
-echo -e "${CYAN}         HEIMDALL WAF INSTALLATION SCRIPT${NC}"
-echo -e "${CYAN}============================================================${NC}\n"
+# ------------------------------------------------------------------
+# NEW helper functions – they do not delete anything
+# ------------------------------------------------------------------
+def get_docker_host():
+    """Return the host address that the Docker container can use to reach the host machine."""
+    if not os.path.exists('/.dockerenv'):
+        return "localhost"
+    try:
+        socket.gethostbyname('host.docker.internal')
+        return "host.docker.internal"
+    except socket.gaierror:
+        return "172.17.0.1"
 
-# Check arguments
-# Check arguments – now with optional 4th argument BACKEND_URL
-if [[ $# -lt 2 ]]; then
-  echo -e "${RED}❌ Usage: ./install.sh PLATFORM_ID BACKEND_PORT [WAF_PORT] [BACKEND_URL]${NC}"
-  echo ""
-  echo "  PLATFORM_ID    - Your project UUID"
-  echo "  BACKEND_PORT   - Port where local backend listens (only used for local check)"
-  echo "  WAF_PORT       - Port for WAF-protected access (default: 8080)"
-  echo "  BACKEND_URL    - Full API URL of your backend (e.g., https://staging.breachnet.io/api/v1)"
-  echo "                   If not provided, falls back to http://localhost:BACKEND_PORT"
-  echo ""
-  exit 1
-fi
+def fix_localhost(url):
+    """Replace 'localhost' with the appropriate Docker host address if needed."""
+    if "localhost" in url and os.path.exists('/.dockerenv'):
+        host = get_docker_host()
+        return url.replace("localhost", host)
+    return url
+# ------------------------------------------------------------------
 
-# Read arguments
-PLATFORM_ID="$1"
-BACKEND_PORT="$2"
-WAF_PORT="${3:-8080}"
-BACKEND_URL="${4:-http://localhost:$BACKEND_PORT}"
+def get_public_ip():
+    services = [
+        "https://ifconfig.me/ip",
+        "https://icanhazip.com",
+        "https://ipinfo.io/ip"
+    ]
+    for url in services:
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                ip = resp.text.strip()
+                if ip:
+                    return ip
+        except Exception:
+            continue
+    return None
 
+def register_stub():
+    platform_id = os.environ.get("PLATFORM_ID")
+    backend_url = os.environ.get("BACKEND_URL")
+    if not platform_id or not backend_url:
+        logger.warning("Missing PLATFORM_ID or BACKEND_URL – stub registration skipped")
+        return
 
-echo -e "${GREEN}⚙️ Configuration:${NC}"
-echo "  Platform ID:   ${CYAN}$PLATFORM_ID${NC}"
-echo "  Backend port:  ${CYAN}$BACKEND_PORT${NC}"
-echo "  WAF port:      ${CYAN}$WAF_PORT${NC}"
-echo "  Backend URL:   ${CYAN}$BACKEND_URL${NC}"
-echo ""
+    # --- ADDED: fix localhost in backend_url ---
+    backend_url = fix_localhost(backend_url)
 
-# Docker availability check
-# ------------------------------------------------------------
-# Docker check
-# ------------------------------------------------------------
-echo -e "${CYAN}[CHECK] Verifying Docker installation...${NC}"
-if ! command -v docker >/dev/null 2>&1; then
-  echo -e "${RED}❌ Docker is not installed or not available in PATH${NC}"
-  echo -e "${YELLOW}🔧 Attempting to install Docker...${NC}"
-  
-  # Detect OS and install Docker accordingly
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    echo "📥 Installing Docker Desktop for macOS..."
-    if command -v brew >/dev/null 2>&1; then
-      echo "🍺 Using Homebrew to install Docker Desktop..."
-      brew install --cask docker
-      if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ Docker Desktop installed via Homebrew${NC}"
-        echo -e "${YELLOW}⚠️  Please start Docker Desktop from Applications and rerun this script${NC}"
-        exit 0
-      fi
-    fi
-    
-    # Fallback: Direct download for macOS
-    echo "📦 Downloading Docker Desktop for macOS..."
-    ARCH=$(uname -m)
-    if [[ "$ARCH" == "arm64" ]]; then
-      DOCKER_URL="https://desktop.docker.com/mac/main/arm64/Docker.dmg"
-    else
-      DOCKER_URL="https://desktop.docker.com/mac/main/amd64/Docker.dmg"
-    fi
-    
-    curl -L "$DOCKER_URL" -o Docker.dmg
-    if [ $? -eq 0 ]; then
-      echo "💿 Mounting and installing Docker Desktop..."
-      hdiutil attach Docker.dmg
-      cp -R "/Volumes/Docker/Docker.app" /Applications/
-      hdiutil detach "/Volumes/Docker"
-      rm Docker.dmg
-      echo -e "${GREEN}✅ Docker Desktop installed${NC}"
-      echo -e "${YELLOW}⚠️  Please start Docker Desktop from Applications and rerun this script${NC}"
-      exit 0
-    fi
-    
-  elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    # Linux
-    echo "🐧 Installing Docker for Linux..."
-    
-    # Try package manager based installation
-    if command -v apt-get >/dev/null 2>&1; then
-      # Ubuntu/Debian
-      echo "📦 Installing Docker via apt..."
-      sudo apt-get update
-      sudo apt-get install -y ca-certificates curl gnupg lsb-release
-      sudo mkdir -p /etc/apt/keyrings
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-      sudo apt-get update
-      sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-      sudo systemctl start docker
-      sudo systemctl enable docker
-      sudo usermod -aG docker $USER
-      echo -e "${GREEN}✅ Docker installed${NC}"
-      echo -e "${YELLOW}⚠️  Please log out and log back in, then rerun this script${NC}"
-      exit 0
-      
-    elif command -v yum >/dev/null 2>&1; then
-      # CentOS/RHEL
-      echo "📦 Installing Docker via yum..."
-      sudo yum install -y yum-utils
-      sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-      sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-      sudo systemctl start docker
-      sudo systemctl enable docker
-      sudo usermod -aG docker $USER
-      echo -e "${GREEN}✅ Docker installed${NC}"
-      echo -e "${YELLOW}⚠️  Please log out and log back in, then rerun this script${NC}"
-      exit 0
-      
-    elif command -v pacman >/dev/null 2>&1; then
-      # Arch Linux
-      echo "📦 Installing Docker via pacman..."
-      sudo pacman -S --noconfirm docker docker-compose
-      sudo systemctl start docker
-      sudo systemctl enable docker
-      sudo usermod -aG docker $USER
-      echo -e "${GREEN}✅ Docker installed${NC}"
-      echo -e "${YELLOW}⚠️  Please log out and log back in, then rerun this script${NC}"
-      exit 0
-    fi
-  fi
-  
-  # If automatic installation failed
-  echo -e "${RED}❌ Automatic Docker installation failed${NC}"
-  echo -e "${YELLOW}Please install Docker manually:${NC}"
-  echo "  📖 macOS: https://docs.docker.com/desktop/install/mac-install/"
-  echo "  📖 Linux: https://docs.docker.com/engine/install/"
-  echo "  📖 Windows: https://docs.docker.com/desktop/install/windows-install/"
-  exit 1
-fi
-echo -e "${GREEN}✅ Docker is available${NC}"
+    public_ip = get_public_ip()
+    if not public_ip:
+        logger.warning("Could not detect public IP – stub registration skipped")
+        return
 
-# Docker status check
-echo "🐳 Checking Docker status..."
-if ! sudo docker info >/dev/null 2>&1; then
-  echo -e "${YELLOW}⚠️  Docker is installed but not responding. Trying to start it...${NC}"
-  sudo systemctl start docker
-  sleep 2
-if ! sudo docker info >/dev/null 2>&1; then
-    echo -e "${RED}❌ Docker is still not running${NC}"
-    echo -e "${YELLOW}Check logs with:${NC} sudo journalctl -u docker -n 50"
-    exit 1
-  fi
-fi
-echo -e "${GREEN}✅ Docker is running${NC}"
+    stub_url = f"http://{public_ip}:8081"
+    endpoint = f"{backend_url.rstrip('/')}/platforms/{platform_id}/update-stub-url/"
 
-# Detect architecture and set Docker platform
-ARCH=$(uname -m)
-if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "aarch64" ]]; then
-  DOCKER_PLATFORM="linux/arm64"
-elif [[ "$ARCH" == "x86_64" ]]; then
-  DOCKER_PLATFORM="linux/amd64"
-else
-  DOCKER_PLATFORM="linux/amd64"  # Default fallback
-fi
+    try:
+        resp = requests.post(endpoint, json={"stub_url": stub_url}, timeout=10)
+        if resp.status_code == 200:
+            logger.info(f"✅ Stub registered: {stub_url}")
+        else:
+            logger.error(f"Registration failed: {resp.status_code} – {resp.text}")
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
 
-# Config service is optional – fallback port for main WAF (unused)
-WAF_CONFIG_PORT=8083
+def get_platform_id():
+    platform_id = request.headers.get('X-Platform-ID')
+    if not platform_id:
+        platform_id = os.environ.get('PLATFORM_ID')
+    if not platform_id:
+        logger.warning("No platform_id found in headers or env – using placeholder")
+        platform_id = "unknown-platform"
+    return platform_id
 
-# Create config volume
-echo "💾 Creating persistent storage for project ID..."
-if ! docker volume create apisphere-config-"$PLATFORM_ID" >/dev/null; then
-  echo -e "${RED}❌ Failed to create Docker volume${NC}"
-  exit 1
-fi
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f:
+            data = json.load(f)
+            blacklist.update(data.get('blacklist', []))
+            for key_str, val in data.get('alert_rate_limits', {}).items():
+                key = ast.literal_eval(key_str)
+                alert_rate_limits[key] = val
+            for key_str, val in data.get('endpoint_rules', {}).items():
+                key = ast.literal_eval(key_str)
+                endpoint_rules[key] = val
+            for key_str, val in data.get('endpoint_counters', {}).items():
+                key = ast.literal_eval(key_str)
+                endpoint_counters[key] = val
+            logger.info(f"Loaded {len(blacklist)} IPs, {len(alert_rate_limits)} alert rules, {len(endpoint_rules)} endpoint rules.")
 
-# Store in Docker volume with proper permissions
-echo "$PLATFORM_ID" > temp_id
-docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/PLATFORM_ID && chmod 644 /config/PLATFORM_ID" < temp_id
-rm temp_id
+def save_data():
+    data = {
+        'blacklist': list(blacklist),
+        'alert_rate_limits': {str(k): v for k, v in alert_rate_limits.items()},
+        'endpoint_rules': {str(k): v for k, v in endpoint_rules.items()},
+        'endpoint_counters': {str(k): v for k, v in endpoint_counters.items()},
+    }
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f)
+    logger.info(f"Saved {len(blacklist)} IPs, {len(alert_rate_limits)} alert rules, {len(endpoint_rules)} endpoint rules.")
 
-# Store WAF_PORT in Docker volume
-echo "$WAF_PORT" > temp_waf
-docker run --rm -i -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "cat > /config/WAF_PORT && chmod 644 /config/WAF_PORT" < temp_waf
-rm temp_waf
+def send_trigger(platform_id, alert_id, client_ip, alert_type, evidence, threat_level):
+    # --- ADDED: fix localhost in trigger URL ---
+    trigger_url = fix_localhost(DJANGO_TRIGGER_URL)
 
-# Verify storage
-docker run --rm -v apisphere-config-"$PLATFORM_ID":/config busybox sh -c "ls -l /config && cat /config/PLATFORM_ID"
+    payload = {
+        "platform_id": platform_id,
+        "alert_id": alert_id,
+        "client_ip": client_ip,
+        "alert_type": alert_type,
+        "evidence": evidence,
+        "threat_level": threat_level,
+        "url": request.url,
+        "method": request.method,
+        "headers": dict(request.headers),
+    }
+    try:
+        resp = requests.post(trigger_url, json=payload, timeout=2)
+        if not 200 <= resp.status_code < 300:
+            logger.error(f"Trigger notification failed: {resp.status_code} {resp.text}")
+    except Exception as e:
+        logger.error(f"Could not send trigger: {e}")
 
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Failed to store PLATFORM_ID in Docker volume${NC}"
-  exit 1
-fi
-echo -e "${GREEN}✅ Project ID stored securely in Docker volume${NC}"
+def match_endpoint(rule_endpoint, request_path):
+    if rule_endpoint == "*":
+        return True
+    if rule_endpoint.endswith('*'):
+        prefix = rule_endpoint[:-1]
+        return request_path.startswith(prefix)
+    return rule_endpoint == request_path
 
-# Pull Docker image from Amazon ECR
-# Public ECR repository URL format: public.ecr.aws/[registry-alias]/[repository-name]:[tag]
-# Private ECR repository URL format: [aws-account-id].dkr.ecr.[region].amazonaws.com/[repository-name]:[tag]
+# ------------------ IP Blacklist ------------------
+@app.route('/api/apisentry-blacklisted-ips', methods=['POST'])
+def add_blacklist():
+    data = request.json
+    ip = data.get('ip')
+    if ip:
+        blacklist.add(ip)
+        save_data()
+        logger.info(f"[BLACKLIST] Added {ip} → Total: {len(blacklist)}")
+    else:
+        logger.warning("[BLACKLIST] Received request without 'ip' field")
+    return jsonify(success=True)
 
-# Replace with your actual ECR repository URL
-ECR_REPO="docker.io/sylviapaul/waf"
-IMAGE_TAG="latest"
+@app.route('/api/apisentry-blacklisted-ips/remove', methods=['POST'])
+def remove_blacklist():
+    data = request.json
+    ip = data.get('ip')
+    if ip and ip in blacklist:
+        blacklist.remove(ip)
+        save_data()
+        logger.info(f"[BLACKLIST] Removed {ip}")
+    else:
+        logger.warning(f"[BLACKLIST] Attempt to remove non-existent IP: {ip}")
+    return jsonify(success=True)
 
-echo -e "${CYAN}📦 Step 2: Downloading APISphere WAF Protection Image${NC}"
-echo "📥 Pulling WAF image for ${ARCH} (${DOCKER_PLATFORM})..."
-if ! docker pull --platform ${DOCKER_PLATFORM} ${ECR_REPO}:${IMAGE_TAG} >/dev/null 2>&1; then
-  echo -e "${RED}❌ Failed to pull Docker image from Amazon ECR for ${ARCH}${NC}"
-  echo -e "${YELLOW}Possible solutions:"
-  echo "  1. Check your internet connection"
-  echo "  2. Verify ECR access: docker pull ${ECR_REPO}:${IMAGE_TAG}"
-  echo "  3. Try with VPN if on corporate network"
-  echo "  4. If you are on Apple Silicon (M1/M2), the script will use linux/amd64 automatically"
-  echo -e "${NC}"
-  exit 1
-fi
-echo -e "${GREEN}✅ WAF Protection image downloaded successfully${NC}"
-echo ""
+# ------------------ Rate Limits ------------------
+@app.route('/api/apisentry-rate-limits', methods=['POST'])
+def add_rate_limit():
+    data = request.json
+    logger.info(f"[RATE LIMIT] Received: {data}")
 
-# Backend service check (improved)
-echo "🔍 Verifying backend service on port $BACKEND_PORT..."
+    if 'endpoint' in data:
+        endpoint = data['endpoint']
+        method = data.get('method', '*')
+        rule_id = str(data.get('id', f"rule_{len(endpoint_rules)+1}"))
+        max_requests = data.get('max_requests')
+        time_window = data.get('time_window_seconds')
+        action = data.get('action', 'block')
+        active = data.get('active', True)
+        if not max_requests or not time_window:
+            logger.error("Missing max_requests or time_window_seconds")
+            return jsonify(error="Missing max_requests or time_window_seconds"), 400
+        key = (endpoint, method, rule_id)
+        endpoint_rules[key] = {
+            "endpoint": endpoint,
+            "method": method,
+            "max_requests": max_requests,
+            "time_window": time_window,
+            "action": action,
+            "active": active,
+            "rule_id": rule_id
+        }
+        save_data()
+        logger.info(f"[RATE LIMIT] Added endpoint rule: {key} -> {max_requests} req/{time_window}s")
+        return jsonify(success=True)
 
-get_pid_from_port() {
-  local port="$1"
-  local pid
+    ip = data.get('ip')
+    limit = data.get('limit')
+    window = data.get('time_window')
+    rule_id = data.get('rule_id', f"alert_rule_{len(alert_rate_limits)+1}")
+    if not limit or not window:
+        logger.error("Missing limit or time_window")
+        return jsonify(error="Missing limit or time_window"), 400
+    key = (ip if ip else "global", rule_id)
+    alert_rate_limits[key] = {
+        "limit": limit,
+        "window": window,
+        "remaining": limit,
+        "reset_at": time() + window,
+        "alert_id": rule_id
+    }
+    save_data()
+    logger.info(f"[RATE LIMIT] Added alert rule: {key} -> {limit} req/{window}s")
+    return jsonify(success=True)
 
-  pid=$(sudo ss -ltnp "( sport = :$port )" 2>/dev/null \
-    | awk -F'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}')
+@app.route('/api/apisentry-rate-limits/remove', methods=['POST'])
+def remove_rate_limit():
+    data = request.json
+    rule_id = data.get('rule_id')
+    ip = data.get('ip')
+    to_delete = None
+    for key, rule in endpoint_rules.items():
+        if rule.get('rule_id') == rule_id:
+            to_delete = key
+            break
+    if to_delete:
+        del endpoint_rules[to_delete]
+        to_delete_counters = [k for k in endpoint_counters.keys() if k[3] == rule_id]
+        for k in to_delete_counters:
+            del endpoint_counters[k]
+        save_data()
+        logger.info(f"[RATE LIMIT] Removed endpoint rule: {to_delete}")
+        return jsonify(success=True)
+    if rule_id:
+        key = (ip if ip else "global", rule_id)
+        if key in alert_rate_limits:
+            del alert_rate_limits[key]
+            save_data()
+            logger.info(f"[RATE LIMIT] Removed alert rule: {key}")
+    return jsonify(success=True)
 
-  if [ -z "$pid" ]; then
-    pid=$(sudo lsof -ti tcp:"$port" 2>/dev/null | head -n1)
-  fi
+# ------------------ Log every request ------------------
+@app.before_request
+def log_request():
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    logger.info(f"REQUEST: {request.method} {request.path} from {client_ip}")
 
-  echo "$pid"
-}
+# ------------------ Main request handler (block & rate limit) ------------------
+@app.before_request
+def block_and_rate_limit():
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    path = request.path
+    method = request.method
 
-BACKEND_PID=$(get_pid_from_port "$BACKEND_PORT")
+    if client_ip in blacklist:
+        logger.info(f"[BLOCK] Blacklisted IP {client_ip} tried to access {path}")
+        send_trigger(
+            platform_id=get_platform_id(),
+            alert_id=None,
+            client_ip=client_ip,
+            alert_type="ip_blacklist",
+            evidence=f"IP {client_ip} is blacklisted",
+            threat_level="high"
+        )
+        return jsonify(error="IP is blacklisted"), 403
 
-if [ -z "$BACKEND_PID" ]; then
-  echo -e "${RED}❌ No service detected on port $BACKEND_PORT${NC}"
-  echo -e "${YELLOW}Please start your backend application first:${NC}"
-  echo ""
-  echo "Common startup commands:"
-  echo "  ${CYAN}Node.js:${NC}    npm start"
-  echo "  ${CYAN}Python:${NC}     flask run -p $BACKEND_PORT"
-  echo "  ${CYAN}Ruby:${NC}       rails server -p $BACKEND_PORT"
-  echo "  ${CYAN}Java:${NC}       mvn spring-boot:run"
-  echo ""
-  echo -e "${YELLOW}After starting your app, rerun this script${NC}"
-  exit 1
-fi
+    now = time()
 
-BACKEND_CMD=$(ps -p "$BACKEND_PID" -o comm= 2>/dev/null | tr -d '[:space:]')
+    for (rule_ip, rule_id), rule in list(alert_rate_limits.items()):
+        if rule_ip == "global" or rule_ip == client_ip:
+            if now >= rule["reset_at"]:
+                rule["remaining"] = rule["limit"]
+                rule["reset_at"] = now + rule["window"]
+            if rule["remaining"] <= 0:
+                logger.info(f"[RATE LIMIT] Alert rule {rule_id} exceeded for {client_ip}")
+                send_trigger(
+                    platform_id=get_platform_id(),
+                    alert_id=rule["alert_id"],
+                    client_ip=client_ip,
+                    alert_type="rate_anomaly",
+                    evidence=f"Rate limit exceeded: {rule['limit']} requests in {rule['window']}s",
+                    threat_level="medium"
+                )
+                return jsonify(error="Rate limit exceeded"), 429
+            rule["remaining"] -= 1
 
-if [ -n "$BACKEND_CMD" ]; then
-  if [[ ! "$BACKEND_CMD" =~ ^(node|next-server|python|python3|java|ruby|gunicorn|uwsgi|dotnet|rails|flask|go|php|nginx|httpd|apache2)$ ]]; then
-    echo -e "${YELLOW}⚠️  Service detected on port $BACKEND_PORT, but process looks unusual ($BACKEND_CMD)${NC}"
-    echo -e "${YELLOW}Proceeding, but please ensure your backend is running as expected.${NC}"
-  fi
+    for (endpoint, ep_method, rule_id), rule in endpoint_rules.items():
+        if not rule.get("active", True):
+            continue
+        if ep_method != "*" and ep_method != method:
+            continue
+        if not match_endpoint(endpoint, path):
+            continue
 
-  echo -e "${GREEN}✅ Backend service confirmed on port $BACKEND_PORT ($BACKEND_CMD)${NC}"
-else
-  echo -e "${GREEN}✅ Backend service confirmed on port $BACKEND_PORT${NC}"
-fi
+        key = (client_ip, endpoint, ep_method, rule_id)
+        if key not in endpoint_counters:
+            endpoint_counters[key] = {
+                "remaining": rule["max_requests"],
+                "reset_at": now + rule["time_window"],
+                "rule_id": rule_id
+            }
+        counter = endpoint_counters[key]
+        if now >= counter["reset_at"]:
+            counter["remaining"] = rule["max_requests"]
+            counter["reset_at"] = now + rule["time_window"]
+        if counter["remaining"] <= 0:
+            logger.info(f"[RATE LIMIT] Endpoint rule {rule_id} exceeded for {client_ip} on {endpoint}")
+            if rule.get("action") == "block":
+                send_trigger(
+                    platform_id=get_platform_id(),
+                    alert_id=rule_id,
+                    client_ip=client_ip,
+                    alert_type="rate_anomaly",
+                    evidence=f"Endpoint rate limit exceeded: {rule['max_requests']} req/{rule['time_window']}s on {endpoint}",
+                    threat_level="medium"
+                )
+                return jsonify(error="Rate limit exceeded"), 429
+        counter["remaining"] -= 1
 
-# Port conflict check for WAF_PORT (matches .bat logic)
-echo "🔎 Checking if WAF port $WAF_PORT is available..."
-WAF_PORT_IN_USE=0
+@app.route('/')
+def alive():
+    return "WAF stub running (blacklist + IP rate limits + endpoint rate limits)"
 
-# Check if any process is using the port
-if lsof -i tcp:"$WAF_PORT" >/dev/null 2>&1; then
-  WAF_PORT_IN_USE=1
-fi
-
-# Check if any Docker container is using the port
-DOCKER_CONFLICT_CONTAINER_IDS=$(docker ps --format '{{.ID}} {{.Ports}}' | grep ":$WAF_PORT->8080" | awk '{print $1}')
-if [ -n "$DOCKER_CONFLICT_CONTAINER_IDS" ]; then
-  WAF_PORT_IN_USE=1
-fi
-
-if [ "$WAF_PORT_IN_USE" -eq 1 ]; then
-  echo -e "${YELLOW}⚠️  Port $WAF_PORT is already in use${NC}"
-  # Try to stop conflicting Docker containers
-  if [ -n "$DOCKER_CONFLICT_CONTAINER_IDS" ]; then
-    for cid in $DOCKER_CONFLICT_CONTAINER_IDS; do
-      echo "🧹 Stopping conflicting Docker container: $cid"
-      docker stop "$cid" >/dev/null 2>&1
-      docker rm "$cid" >/dev/null 2>&1
-    done
-  fi
-  # Check again if port is still in use
-  if lsof -i tcp:"$WAF_PORT" >/dev/null 2>&1; then
-    echo -e "${RED}❌ Port $WAF_PORT is still in use after Docker cleanup${NC}"
-    echo -e "${YELLOW}Tips:${NC}"
-    echo "  1. Close any application using port $WAF_PORT"
-    echo "  2. Choose a different WAF_PORT"
-    echo "  3. Run: lsof -i :$WAF_PORT"
-    exit 1
-  fi
-  echo -e "${GREEN}✅ Port conflict resolved${NC}"
-fi
-
-# Stop and remove any container using the target WAF port
-existing_container=$(docker ps --format '{{.ID}} {{.Ports}}' | grep ":$WAF_PORT->8080" | awk '{print $1}')
-if [ -n "$existing_container" ]; then
-  echo "🧹 Stopping container using port $WAF_PORT: $existing_container"
-  docker stop "$existing_container" >/dev/null 2>&1
-  docker rm "$existing_container" >/dev/null 2>&1
-fi
-
-# Cleanup existing containers
-echo "🧹 Removing old WAF containers (if any)..."
-docker rm -f apisphere-waf-"$PLATFORM_ID" >/dev/null 2>&1 || true
-
-echo -e "${CYAN}📦 Step 3: Starting APISphere WAF Protection${NC}"
-echo "🛡️ Starting WAF protection service..."
-
-CONTAINER_NAME="apisphere-waf-$PLATFORM_ID"
-
-CONTAINER_ID=$(docker run -d \
-  --name "$CONTAINER_NAME" \
-  -v apisphere-config-"$PLATFORM_ID":/app/config:ro \
-  -e PLATFORM_ID="$PLATFORM_ID" \
-  -e BACKEND_HOST=host.docker.internal \
-  -e BACKEND_PORT="$BACKEND_PORT" \
-  -e WAF_PORT="$WAF_PORT" \
-  -e WAF_CONFIG_PORT="$WAF_CONFIG_PORT" \
-  --add-host=host.docker.internal:host-gateway \
-  -p "$WAF_PORT":"$WAF_PORT" \
-  "$ECR_REPO:$IMAGE_TAG" 2>&1)
-
-RUN_EXIT_CODE=$?
-
-if [ $RUN_EXIT_CODE -ne 0 ] || [ -z "$CONTAINER_ID" ]; then
-  echo -e "${RED}❌ Failed to start WAF container${NC}"
-  echo "$CONTAINER_ID"
-  exit 1
-fi
-
-echo "⏳ Waiting for container initialization (5 seconds)..."
-sleep 5
-
-if docker ps --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
-  echo "🔍 Verifying container config..."
-  docker exec "$CONTAINER_NAME" ls -l /app/config || true
-  docker exec "$CONTAINER_NAME" cat /app/config/PLATFORM_ID || true
-
-  echo -e "${GREEN}✅ WAF started successfully${NC}"
-  echo ""
-  echo -e "${GREEN}🎉 APISphere WAF Setup Complete!${NC}"
-  echo ""
-  echo -e "${CYAN}=== Protection Status ========================${NC}"
-  echo "  Project ID:           $PLATFORM_ID"
-  echo "  Backend URL:          http://localhost:$BACKEND_PORT"
-  echo "  Protected URL:        http://localhost:$WAF_PORT"
-  echo "  Config Service Port:  $WAF_CONFIG_PORT"
-  echo ""
-  echo -e "${CYAN}=== Security Verification ===================${NC}"
-  echo "  Test safe request:"
-  echo "    curl -I http://localhost:$WAF_PORT/"
-  echo ""
-  echo "  Test blocked request:"
-  echo "    curl 'http://localhost:$WAF_PORT/?exec=/bin/bash'"
-  echo ""
-  echo -e "${CYAN}=== Management Commands =====================${NC}"
-  echo "  View WAF logs:        docker logs $CONTAINER_NAME"
-  echo "  Stop WAF:             docker stop $CONTAINER_NAME"
-  echo "  Restart WAF:          docker start $CONTAINER_NAME"
-  echo "  Remove WAF:           docker rm -f $CONTAINER_NAME"
-  echo "  Remove volume:        docker volume rm apisphere-config-$PLATFORM_ID"
-  echo ""
-  echo -e "${GREEN}All traffic should now go through the protected port!${NC}"
-else
-  echo -e "${RED}❌ WAF failed to start${NC}"
-  echo ""
-  echo "Container logs:"
-  docker logs "$CONTAINER_NAME" 2>&1 || true
-  echo ""
-  echo "Troubleshooting steps:"
-  echo "  1. Check container logs:"
-  echo "     ${CYAN}docker logs $CONTAINER_NAME${NC}"
-  echo "  2. Verify port availability:"
-  echo "     ${CYAN}ss -ltnp '( sport = :$WAF_PORT )'${NC}"
-  echo "  3. Ensure backend is still running"
-  exit 1
-fi
-
-# ------------------------------------------------------------
-# Stub container (IP blacklist + rate limiting)
-# ------------------------------------------------------------
-echo -e "${CYAN}[STEP 2/4] Installing Heimdall stub container...${NC}"
-sudo mkdir -p /data/waf
-sudo chmod 777 /data/waf
-
-echo -e "  ${CYAN}→ Pulling stub image from Docker Hub...${NC}"
-docker pull nifzzy/waf-stub:latest
-if [[ $? -ne 0 ]]; then
-    echo -e "${RED}[ERROR] Failed to pull stub image.${NC}"
-    exit 1
-fi
-
-echo -e "  ${CYAN}→ Removing any existing stub container...${NC}"
-docker stop waf-stub >/dev/null 2>&1 || true
-docker rm waf-stub >/dev/null 2>&1 || true
-
-echo -e "  ${CYAN}→ Starting stub container on port 8081...${NC}"
-docker run -d --restart=always --network="host" -v /data/waf:/data --name waf-stub nifzzy/waf-stub:latest >/dev/null 2>&1
-if [[ $? -ne 0 ]]; then
-    echo -e "${RED}[ERROR] Failed to start stub container.${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✅ Heimdall stub container started successfully on port 8081.${NC}"
-# ============================================================
-# Report stub URL to backend
-# ============================================================
-echo ""
-echo -e "${CYAN}[INFO] Detecting public IP address...${NC}"
-PUBLIC_IP=$(curl -s ifconfig.me/ip)
-if [[ -n "$PUBLIC_IP" ]]; then
-    echo -e "${GREEN}[OK] Public IP detected: $PUBLIC_IP${NC}"
-    echo -e "${CYAN}[POST] Updating backend ($BACKEND_URL) with stub URL...${NC}"
-    curl -X POST "$BACKEND_URL/api/v1/platforms/$PLATFORM_ID/update-stub-url/" \
-        -H "Content-Type: application/json" \
-        -d "{\"stub_url\": \"http://$PUBLIC_IP:8081\"}" \
-        -s -o /dev/null
-    if [[ $? -eq 0 ]]; then
-        echo -e "${GREEN}[OK] Backend updated. Stub URL: http://$PUBLIC_IP:8081${NC}"
-    else
-        echo -e "${YELLOW}[WARN] Failed to update backend. You may need to set stub_url manually in Django admin.${NC}"
-    fi
-else
-    echo -e "${YELLOW}[WARN] Could not detect public IP. Please set platform.stub_url manually in Django admin.${NC}"
-fi
-echo ""
+if __name__ == '__main__':
+    load_data()
+    time_module.sleep(5)
+    register_stub()
+    app.run(host='0.0.0.0', port=8081, debug=False)
