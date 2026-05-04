@@ -16,12 +16,10 @@ echo -e "${CYAN}         HEIMDALL WAF INSTALLATION SCRIPT${NC}"
 echo -e "${CYAN}============================================================${NC}\n"
 
 POSITIONAL=()
-BACKEND_URL=""
 STUB_IP=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --backend-url) BACKEND_URL="$2"; shift 2 ;;
         --stub-ip) STUB_IP="$2"; shift 2 ;;
         -*) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
         *) POSITIONAL+=("$1"); shift ;;
@@ -30,30 +28,19 @@ done
 set -- "${POSITIONAL[@]}"
 
 if [[ $# -lt 2 ]]; then
-    echo -e "${RED}Usage: $0 PLATFORM_ID BACKEND_PORT [WAF_PORT] [--backend-url URL] [--stub-ip IP]${NC}"
+    echo -e "${RED}Usage: $0 PLATFORM_ID BACKEND_PORT [WAF_PORT]${NC}"
     exit 1
 fi
 
 PLATFORM_ID="$1"
 BACKEND_PORT="$2"
 WAF_PORT="${3:-8080}"
-
-if [ -z "$BACKEND_URL" ]; then
-    if [ "$BACKEND_PORT" = "8000" ] && [[ "$OSTYPE" != "linux-gnu"* ]]; then
-        BACKEND_URL="http://localhost:$BACKEND_PORT/api/v1"
-        echo -e "${YELLOW}⚠️  No --backend-url provided. Using $BACKEND_URL (local dev only).${NC}"
-    else
-        echo -e "${RED}❌ ERROR: --backend-url is required.${NC}"
-        echo "   Example: --backend-url https://staging.breachnet.io/api/v1"
-        exit 1
-    fi
-fi
+BACKEND_URL="https://staging.breachnet.io/api/v1"
 
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Platform ID:   ${CYAN}$PLATFORM_ID${NC}"
 echo "  Backend port:  ${CYAN}$BACKEND_PORT${NC}"
 echo "  WAF port:      ${CYAN}$WAF_PORT${NC}"
-echo "  Backend URL:   ${CYAN}$BACKEND_URL${NC}"
 [ -n "$STUB_IP" ] && echo "  Stub IP:       ${CYAN}$STUB_IP${NC}"
 echo ""
 
@@ -142,7 +129,7 @@ echo "$WAF_PORT"    | docker run --rm -i -v "apisphere-config-${PLATFORM_ID}:/co
 echo -e "${GREEN}✅ Project ID stored${NC}\n"
 
 # ------------------------------------------------------------
-# Backend port check  (lsof on macOS, ss on Linux)
+# Backend port check
 # ------------------------------------------------------------
 echo -e "${CYAN}[CHECK] Verifying backend on port $BACKEND_PORT...${NC}"
 PORT_IN_USE=false
@@ -159,14 +146,11 @@ echo -e "${GREEN}✅ Backend confirmed on port $BACKEND_PORT${NC}\n"
 
 # ------------------------------------------------------------
 # Stub container
-# FIX: --network=host is unsupported on macOS Docker Desktop.
-#      Use -p 8081:8081 on macOS; keep --network=host on Linux
-#      (host networking gives the stub the real public IP on Linux).
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 2] Installing Heimdall stub container...${NC}"
 
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    sudo mkdir -p /data/waf && sudo chmod 777 /data/waf
+    sudo mkdir -p /data/waf && sudo chown 1000:1000 /data/waf && sudo chmod 755 /data/waf
     DATA_MOUNT="/data/waf"
 else
     mkdir -p "$HOME/.heimdall/waf"
@@ -180,20 +164,15 @@ echo "  → Removing existing stub container..."
 docker stop waf-stub >/dev/null 2>&1 || true
 docker rm   waf-stub >/dev/null 2>&1 || true
 
-# Resolve BACKEND_URL for inside-container networking
 STUB_BACKEND_URL="$BACKEND_URL"
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     GATEWAY_IP=$(ip route 2>/dev/null | grep default | awk '{print $3}' | head -1)
     [ -z "$GATEWAY_IP" ] && GATEWAY_IP="172.17.0.1"
     STUB_BACKEND_URL=$(echo "$BACKEND_URL" | sed "s/localhost/$GATEWAY_IP/g")
 elif [[ "$OSTYPE" == "darwin"* ]]; then
-    # host.docker.internal resolves correctly on macOS Docker Desktop
     STUB_BACKEND_URL=$(echo "$BACKEND_URL" | sed "s/localhost/host.docker.internal/g")
 fi
 
-echo -e "${CYAN}[INFO] Stub will register to: $STUB_BACKEND_URL${NC}"
-
-# FIX: macOS gets -p flag; Linux gets --network=host so stub sees public IP
 if [[ "$OSTYPE" == "darwin"* ]]; then
     STUB_RUN_CMD=(docker run -d --restart=always
         -p 8081:8081
@@ -212,14 +191,12 @@ else
         nifzzy/waf-stub:latest)
 fi
 
-# FIX: don't redirect stderr — capture failure and print logs
 if ! "${STUB_RUN_CMD[@]}"; then
     echo -e "${RED}[ERROR] Failed to start stub container. Logs:${NC}"
     docker logs waf-stub 2>/dev/null || true
     exit 1
 fi
 
-# FIX: open firewall on Linux so backend can actually reach stub
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     if command -v ufw >/dev/null 2>&1; then
         sudo ufw allow 8081/tcp >/dev/null 2>&1 && echo -e "${GREEN}✅ ufw: port 8081 opened${NC}"
@@ -230,11 +207,9 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     fi
 fi
 
-# Give stub 5s to start and attempt self-registration
 echo "  → Waiting for stub to start and register..."
 sleep 5
 
-# Verify stub is actually running
 if ! docker ps --format "{{.Names}}" | grep -q "^waf-stub$"; then
     echo -e "${RED}[ERROR] Stub container exited immediately. Logs:${NC}"
     docker logs waf-stub
@@ -242,14 +217,12 @@ if ! docker ps --format "{{.Names}}" | grep -q "^waf-stub$"; then
 fi
 echo -e "${GREEN}✅ Stub container running on port 8081${NC}"
 
-# Verify self-registration in logs
 if docker logs waf-stub 2>&1 | grep -qi "registered\|registration"; then
     echo -e "${GREEN}✅ Stub self-registration attempted${NC}"
 else
     echo -e "${YELLOW}⚠️  No registration log found. Check: docker logs waf-stub${NC}"
 fi
 
-# Optional manual registration fallback
 if [ -n "$STUB_IP" ]; then
     echo -e "${CYAN}[INFO] Manually registering stub: http://$STUB_IP:8081${NC}"
     curl -s -o /dev/null -X POST "$BACKEND_URL/platforms/$PLATFORM_ID/update-stub-url/" \
@@ -274,7 +247,7 @@ fi
 echo -e "${GREEN}✅ Main WAF image downloaded${NC}\n"
 
 # ------------------------------------------------------------
-# Port conflict check for WAF port (lsof on macOS, ss on Linux)
+# Port conflict check
 # ------------------------------------------------------------
 echo -e "${CYAN}[PORT] Checking port $WAF_PORT...${NC}"
 WAF_PORT_BUSY=false
@@ -352,13 +325,10 @@ echo "  Stub:          http://localhost:8081 (self-registered)"
 [ $MAIN_WAF_STARTED -eq 1 ] && echo "  Main WAF:      http://localhost:$WAF_PORT"
 echo "  Config port:   $WAF_CONFIG_PORT"
 echo ""
-echo -e "${GREEN}[VERIFY BLACKLISTING]${NC}"
+echo -e "${GREEN}[MANAGEMENT]${NC}"
 echo "  Stub logs:     docker logs waf-stub"
-echo "  Test block:    curl -H \"X-Forwarded-For: 10.0.0.99\" http://localhost:8081/any/path"
-echo "  Add IP at:     http://localhost:$WAF_PORT/ip-blacklist"
-echo ""
-echo -e "${GREEN}[PERSISTENCE]${NC}"
-echo "  Stub rules:    ${DATA_MOUNT}/rules.json"
-echo "  Docker volume: apisphere-config-${PLATFORM_ID}"
+echo "  WAF logs:      docker logs apisphere-waf-${PLATFORM_ID}"
+echo "  Stop WAF:      docker stop apisphere-waf-${PLATFORM_ID}"
+echo "  Restart WAF:   docker start apisphere-waf-${PLATFORM_ID}"
 echo ""
 [ $MAIN_WAF_STARTED -eq 0 ] && echo -e "${YELLOW}[NOTE] Main WAF failed. Stub is still protecting your backend.${NC}"
