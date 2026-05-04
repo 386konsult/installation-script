@@ -1,10 +1,10 @@
 @echo off
-REM APISphere WAF Installation Script for Windows
+REM HEIMDALL WAF Installation Script for Windows
 REM Enhanced with port conflict resolution and stub self‑registration
 
 setlocal enabledelayedexpansion
 
-echo [SETUP] APISphere WAF Installation Starting...
+echo [SETUP] HEIMDALL WAF Installation Starting...
 echo.
 
 if 1==0 (
@@ -15,7 +15,19 @@ set PLATFORM_ID=%~1
 set BACKEND_PORT=%~2
 if "%~3"=="" (set WAF_PORT=8080) else (set WAF_PORT=%~3)
 set BACKEND_URL=%4
-if "%BACKEND_URL%"=="" set BACKEND_URL=http://localhost:%BACKEND_PORT%
+
+REM Check for BACKEND_URL
+if "%BACKEND_URL%"=="" (
+    REM Allow localhost default only for typical dev (port 8000)
+    if "%BACKEND_PORT%"=="8000" (
+        set BACKEND_URL=http://localhost:%BACKEND_PORT%/api/v1
+        echo [WARN] No --backend-url provided. Using %BACKEND_URL% ^(local dev only^).
+    ) else (
+        echo [ERROR] --backend-url is required for production.
+        echo   Example: install.bat PLATFORM_ID BACKEND_PORT WAF_PORT https://staging.breachnet.io/api/v1
+        exit /b 1
+    )
+)
 
 echo [CONFIG] Configuration:
 echo   Platform ID: %PLATFORM_ID%
@@ -111,9 +123,9 @@ set IMAGE_TAG=latest
 echo [PULL] Pulling WAF image for %PROCESSOR_ARCHITECTURE% (%DOCKER_PLATFORM%)...
 docker pull --platform %DOCKER_PLATFORM% %ECR_REPO%:%IMAGE_TAG% >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Failed to pull Docker image from Amazon ECR for %PROCESSOR_ARCHITECTURE%
+    echo [ERROR] Failed to pull Docker image for %PROCESSOR_ARCHITECTURE%
     echo [TIP]  1. Check your internet connection
-    echo        2. Verify ECR access: docker pull %ECR_REPO%:%IMAGE_TAG%
+    echo        2. Verify access: docker pull %ECR_REPO%:%IMAGE_TAG%
     echo        3. Try with VPN if on corporate network
     exit /b 1
 )
@@ -161,7 +173,7 @@ if "%PORT_CONFLICT%"=="true" (
 echo [CLEANUP] Removing old WAF containers (if any)...
 docker rm -f apisphere-waf-%PLATFORM_ID% >nul 2>&1
 
-echo [STEP 3] Starting APISphere WAF Protection...
+echo [STEP 3] Starting Heimdall WAF Protection...
 docker run -d --name apisphere-waf-%PLATFORM_ID% ^
     -v apisphere-config-%PLATFORM_ID%:/app/config:ro ^
     -e PLATFORM_ID=%PLATFORM_ID% ^
@@ -181,7 +193,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [OK] APISphere WAF started successfully
+echo [OK] Heimdall WAF started successfully
 echo.
 echo [SUCCESS] Main WAF Installation Complete!
 
