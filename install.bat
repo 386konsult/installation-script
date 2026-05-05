@@ -7,33 +7,15 @@ setlocal enabledelayedexpansion
 echo [SETUP] HEIMDALL WAF Installation Starting...
 echo.
 
-if 1==0 (
-    exit /b 1
-)
-
 set PLATFORM_ID=%~1
 set BACKEND_PORT=%~2
 if "%~3"=="" (set WAF_PORT=8080) else (set WAF_PORT=%~3)
-set BACKEND_URL=%4
-
-REM Check for BACKEND_URL
-if "%BACKEND_URL%"=="" (
-    REM Allow localhost default only for typical dev (port 8000)
-    if "%BACKEND_PORT%"=="8000" (
-        set BACKEND_URL=http://localhost:%BACKEND_PORT%/api/v1
-        echo [WARN] No --backend-url provided. Using %BACKEND_URL% ^(local dev only^).
-    ) else (
-        echo [ERROR] --backend-url is required for production.
-        echo   Example: install.bat PLATFORM_ID BACKEND_PORT WAF_PORT https://staging.breachnet.io/api/v1
-        exit /b 1
-    )
-)
+set BACKEND_URL=https://staging.breachnet.io/api/v1
 
 echo [CONFIG] Configuration:
 echo   Platform ID: %PLATFORM_ID%
 echo   Your app runs on: %BACKEND_PORT%
 echo   WAF will run on: %WAF_PORT%
-echo   Backend URL: %BACKEND_URL%
 echo.
 
 echo [CHECK] Verifying Docker availability...
@@ -198,7 +180,7 @@ echo.
 echo [SUCCESS] Main WAF Installation Complete!
 
 REM ------------------------------------------------------------------
-REM Stub container (IP blacklist + rate limiting) – with self‑registration
+REM Stub container
 REM ------------------------------------------------------------------
 echo.
 echo [STEP 2] Installing Heimdall stub container...
@@ -250,8 +232,5 @@ echo   Stop WAF:             docker stop apisphere-waf-%PLATFORM_ID%
 echo   Restart WAF:          docker start apisphere-waf-%PLATFORM_ID%
 echo   Remove WAF:           docker rm -f apisphere-waf-%PLATFORM_ID%
 echo   Remove volume:        docker volume rm apisphere-config-%PLATFORM_ID%
-echo.
-echo [PERSISTENCE INFO]
-echo   PLATFORM_ID is stored in Docker volume: apisphere-config-%PLATFORM_ID%
 echo.
 echo [NOTE] All traffic should now go through the protected port!
