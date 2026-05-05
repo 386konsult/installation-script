@@ -286,6 +286,7 @@ echo -e "${CYAN}[STEP 4] Starting main WAF container...${NC}"
 if ! docker run -d \
     --name "apisphere-waf-${PLATFORM_ID}" \
     -v "apisphere-config-${PLATFORM_ID}:/app/config:ro" \
+    -v "${DATA_MOUNT}:/data:ro" \
     -e PLATFORM_ID="$PLATFORM_ID" \
     -e BACKEND_HOST=host.docker.internal \
     -e BACKEND_PORT="$BACKEND_PORT" \
