@@ -1,6 +1,8 @@
 #!/bin/bash
 # ============================================================
 #  Heimdall WAF for Linux/macOS
+#  Enhanced: Stub (port 8081) forwards to Main WAF (port WAF_PORT)
+#  Nginx must point to stub port 8081
 # ============================================================
 
 set -e
@@ -145,7 +147,7 @@ fi
 echo -e "${GREEN}✅ Backend confirmed on port $BACKEND_PORT${NC}\n"
 
 # ------------------------------------------------------------
-# Stub container
+# Stub container (with WAF_PORT forwarding)
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 2] Installing Heimdall stub container...${NC}"
 
@@ -179,6 +181,7 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         -v "${DATA_MOUNT}:/data"
         -e PLATFORM_ID="$PLATFORM_ID"
         -e BACKEND_URL="$STUB_BACKEND_URL"
+        -e WAF_PORT="$WAF_PORT"
         --name waf-stub
         nifzzy/waf-stub:latest)
 else
@@ -187,6 +190,7 @@ else
         -v "${DATA_MOUNT}:/data"
         -e PLATFORM_ID="$PLATFORM_ID"
         -e BACKEND_URL="$STUB_BACKEND_URL"
+        -e WAF_PORT="$WAF_PORT"
         --name waf-stub
         nifzzy/waf-stub:latest)
 fi
@@ -286,6 +290,7 @@ echo -e "${CYAN}[STEP 4] Starting main WAF container...${NC}"
 if ! docker run -d \
     --name "apisphere-waf-${PLATFORM_ID}" \
     -v "apisphere-config-${PLATFORM_ID}:/app/config:ro" \
+    -v "${DATA_MOUNT}:/data/waf:ro" \
     -e PLATFORM_ID="$PLATFORM_ID" \
     -e BACKEND_HOST=host.docker.internal \
     -e BACKEND_PORT="$BACKEND_PORT" \
@@ -321,9 +326,15 @@ echo -e "${CYAN}============================================================${NC
 echo -e "${GREEN}[PROTECTION STATUS]${NC}"
 echo "  Project ID:    $PLATFORM_ID"
 echo "  Backend:       http://localhost:$BACKEND_PORT"
-echo "  Stub:          http://localhost:8081 (self-registered)"
-[ $MAIN_WAF_STARTED -eq 1 ] && echo "  Main WAF:      http://localhost:$WAF_PORT"
+echo "  Stub (front):  http://localhost:8081 (forwards to main WAF)"
+[ $MAIN_WAF_STARTED -eq 1 ] && echo "  Main WAF:      http://localhost:$WAF_PORT (internal – not exposed directly)"
 echo "  Config port:   $WAF_CONFIG_PORT"
+echo ""
+echo -e "${GREEN}[TRAFFIC FLOW - Option 1]${NC}"
+echo "  ✅ Nginx must be configured to proxy traffic to the STUB port:"
+echo "       proxy_pass http://localhost:8081;"
+echo "  ✅ Stub performs IP blacklisting + rate limiting, then forwards to main WAF."
+echo "  ✅ Main WAF does SQLi/XSS detection and forwards to backend."
 echo ""
 echo -e "${GREEN}[MANAGEMENT]${NC}"
 echo "  Stub logs:     docker logs waf-stub"
@@ -331,4 +342,4 @@ echo "  WAF logs:      docker logs apisphere-waf-${PLATFORM_ID}"
 echo "  Stop WAF:      docker stop apisphere-waf-${PLATFORM_ID}"
 echo "  Restart WAF:   docker start apisphere-waf-${PLATFORM_ID}"
 echo ""
-[ $MAIN_WAF_STARTED -eq 0 ] && echo -e "${YELLOW}[NOTE] Main WAF failed. Stub is still protecting your backend.${NC}"
+[ $MAIN_WAF_STARTED -eq 0 ] && echo -e "${YELLOW}[NOTE] Main WAF failed. Stub is still protecting your backend (blacklisting only).${NC}"

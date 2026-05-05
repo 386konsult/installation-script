@@ -1,12 +1,16 @@
 @echo off
-REM HEIMDALL WAF Installation Script for Windows
-REM Enhanced with port conflict resolution and stub self‑registration
+REM ============================================================
+REM  HEIMDALL WAF Installation Script for Windows
+REM  Enhanced with port conflict resolution and stub self‑registration
+REM  Updated: stub receives WAF_PORT, nginx points to stub (8081)
+REM ============================================================
 
 setlocal enabledelayedexpansion
 
 echo [SETUP] HEIMDALL WAF Installation Starting...
 echo.
 
+REM ---- Parse arguments ----
 set PLATFORM_ID=%~1
 set BACKEND_PORT=%~2
 if "%~3"=="" (set WAF_PORT=8080) else (set WAF_PORT=%~3)
@@ -18,6 +22,7 @@ echo   Your app runs on: %BACKEND_PORT%
 echo   WAF will run on: %WAF_PORT%
 echo.
 
+REM ---- Docker availability check ----
 echo [CHECK] Verifying Docker availability...
 docker --version >nul 2>&1
 if errorlevel 1 (
@@ -59,6 +64,7 @@ if errorlevel 1 (
 )
 echo [OK] Docker is available
 
+REM ---- Docker running check ----
 echo [CHECK] Verifying Docker status...
 docker info >nul 2>&1
 if errorlevel 1 (
@@ -67,7 +73,7 @@ if errorlevel 1 (
 )
 echo [OK] Docker is running
 
-REM Detect architecture and set Docker platform
+REM ---- Architecture detection ----
 echo [DETECT] Detecting system architecture...
 for /f "tokens=*" %%i in ('wmic os get osarchitecture ^| findstr /r "[0-9]"') do set ARCH=%%i
 set ARCH=%ARCH: =%
@@ -78,9 +84,10 @@ if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
 )
 echo [INFO] Architecture: %PROCESSOR_ARCHITECTURE%, Docker Platform: %DOCKER_PLATFORM%
 
-REM Config service fallback
+REM ---- Config port ----
 set WAF_CONFIG_PORT=8083
 
+REM ---- Persistent volume for configuration ----
 echo [VOLUME] Creating persistent storage for project ID...
 docker volume create apisphere-config-%PLATFORM_ID% >nul 2>&1
 
@@ -99,6 +106,7 @@ if errorlevel 1 (
 )
 echo [OK] Project ID stored securely in Docker volume
 
+REM ---- Pull main WAF image ----
 set ECR_REPO=docker.io/sylviapaul/waf
 set IMAGE_TAG=latest
 
@@ -114,6 +122,7 @@ if errorlevel 1 (
 echo [OK] WAF Protection image downloaded successfully
 echo.
 
+REM ---- Verify backend is listening ----
 echo [CHECK] Verifying backend on port %BACKEND_PORT%...
 set SERVICE_RUNNING=false
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BACKEND_PORT%"') do (
@@ -128,7 +137,7 @@ if "%SERVICE_RUNNING%"=="false" (
 )
 echo [OK] Backend service confirmed
 
-REM Port conflict resolution
+REM ---- Port conflict resolution ----
 echo [PORT] Checking port availability...
 set PORT_CONFLICT=false
 netstat -ano | findstr ":%WAF_PORT% " >nul && set PORT_CONFLICT=true
@@ -152,12 +161,16 @@ if "%PORT_CONFLICT%"=="true" (
     echo [OK] Port conflict resolved
 )
 
+REM ---- Remove old main WAF container ----
 echo [CLEANUP] Removing old WAF containers (if any)...
 docker rm -f apisphere-waf-%PLATFORM_ID% >nul 2>&1
+
+if not exist "C:\data\waf" mkdir C:\data\waf
 
 echo [STEP 3] Starting Heimdall WAF Protection...
 docker run -d --name apisphere-waf-%PLATFORM_ID% ^
     -v apisphere-config-%PLATFORM_ID%:/app/config:ro ^
+    -v C:\data\waf:/data/waf:ro ^
     -e PLATFORM_ID=%PLATFORM_ID% ^
     -e BACKEND_HOST=host.docker.internal ^
     -e BACKEND_PORT=%BACKEND_PORT% ^
@@ -179,9 +192,7 @@ echo [OK] Heimdall WAF started successfully
 echo.
 echo [SUCCESS] Main WAF Installation Complete!
 
-REM ------------------------------------------------------------------
-REM Stub container
-REM ------------------------------------------------------------------
+REM ---- Stub container installation ----
 echo.
 echo [STEP 2] Installing Heimdall stub container...
 if not exist "C:\data\waf" mkdir C:\data\waf
@@ -199,6 +210,7 @@ docker run -d --restart=always -p 8081:8081 ^
     -v C:\data\waf:/data ^
     -e PLATFORM_ID=%PLATFORM_ID% ^
     -e BACKEND_URL=%STUB_BACKEND_URL% ^
+    -e WAF_PORT=%WAF_PORT% ^
     --name waf-stub nifzzy/waf-stub:latest >nul 2>&1
 
 if errorlevel 1 (
@@ -210,27 +222,33 @@ echo [OK] Heimdall stub container started successfully on port 8081.
 echo [INFO] The stub will automatically register its public IP with the backend.
 echo.
 
-REM ------------------------------------------------------------------
-REM Final status output
-REM ------------------------------------------------------------------
+REM ---- Final status output ----
 echo [PROTECTION STATUS]
 echo   Project ID:           %PLATFORM_ID%
 echo   Backend URL:          http://localhost:%BACKEND_PORT%
-echo   Protected URL:        http://localhost:%WAF_PORT%
+echo   Stub (front door):    http://localhost:8081 (forwards to main WAF)
+echo   Main WAF (internal):  http://localhost:%WAF_PORT%
 echo   Config Service Port:  %WAF_CONFIG_PORT%
+echo.
+echo [TRAFFIC FLOW]
+echo   Nginx must be configured to proxy traffic to the STUB port:
+echo     proxy_pass http://localhost:8081;
+echo   Stub handles IP blacklisting + rate limiting, then forwards to main WAF.
+echo   Main WAF handles SQLi/XSS detection and forwards to backend.
 echo.
 echo [SECURITY VERIFICATION]
 echo   Test safe request:
-echo     curl -I http://localhost:%WAF_PORT%/
+echo     curl -I http://localhost:8081/
 echo.
-echo   Test blocked request:
-echo     curl "http://localhost:%WAF_PORT%/?exec=/bin/bash"
+echo   Test blocked request (SQLi in query):
+echo     curl "http://localhost:8081/?exec=/bin/bash"
 echo.
 echo [MANAGEMENT COMMANDS]
+echo   View stub logs:       docker logs waf-stub
 echo   View WAF logs:        docker logs apisphere-waf-%PLATFORM_ID%
 echo   Stop WAF:             docker stop apisphere-waf-%PLATFORM_ID%
 echo   Restart WAF:          docker start apisphere-waf-%PLATFORM_ID%
 echo   Remove WAF:           docker rm -f apisphere-waf-%PLATFORM_ID%
 echo   Remove volume:        docker volume rm apisphere-config-%PLATFORM_ID%
 echo.
-echo [NOTE] All traffic should now go through the protected port!
+echo [NOTE] All incoming traffic must go through port 8081 (stub) for full protection.
