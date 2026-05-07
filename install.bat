@@ -107,7 +107,7 @@ if errorlevel 1 (
 echo [OK] Project ID stored securely in Docker volume
 
 REM ---- Pull main WAF image ----
-set ECR_REPO=docker.io/sylviapaul/waf
+set ECR_REPO=docker.io/nifzzy/waf
 set IMAGE_TAG=latest
 
 echo [PULL] Pulling WAF image for %PROCESSOR_ARCHITECTURE% (%DOCKER_PLATFORM%)...

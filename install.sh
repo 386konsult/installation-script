@@ -241,7 +241,7 @@ echo ""
 # Main WAF image
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 3] Downloading main WAF image...${NC}"
-ECR_REPO="docker.io/sylviapaul/waf"
+ECR_REPO="docker.io/nifzzy/waf"
 IMAGE_TAG="latest"
 
 if ! docker pull --platform "$DOCKER_PLATFORM" "$ECR_REPO:$IMAGE_TAG" >/dev/null 2>&1; then
