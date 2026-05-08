@@ -183,7 +183,7 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         -e BACKEND_URL="$STUB_BACKEND_URL"
         -e WAF_PORT="$WAF_PORT"
         --name waf-stub
-        nifzzy/waf-stub:latest)
+        sylviapaul/waf-stub:latest)
 else
     STUB_RUN_CMD=(docker run -d --restart=always
         --network=host
@@ -192,7 +192,7 @@ else
         -e BACKEND_URL="$STUB_BACKEND_URL"
         -e WAF_PORT="$WAF_PORT"
         --name waf-stub
-        nifzzy/waf-stub:latest)
+        sylviapaul/waf-stub:latest)
 fi
 
 if ! "${STUB_RUN_CMD[@]}"; then
