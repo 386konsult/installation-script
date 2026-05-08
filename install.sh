@@ -119,7 +119,7 @@ else
 fi
 echo -e "${GREEN}[INFO] Architecture: $ARCH → $DOCKER_PLATFORM${NC}\n"
 
-WAF_CONFIG_PORT=8083
+WAF_CONFIG_PORT=8081
 
 # ------------------------------------------------------------
 # Persistent volume
@@ -160,7 +160,7 @@ else
 fi
 
 echo "  → Pulling stub image..."
-docker pull nifzzy/waf-stub:latest
+docker pull sylviapaul/waf-stub:latest
 
 echo "  → Removing existing stub container..."
 docker stop waf-stub >/dev/null 2>&1 || true
@@ -241,7 +241,7 @@ echo ""
 # Main WAF image
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 3] Downloading main WAF image...${NC}"
-ECR_REPO="docker.io/nifzzy/waf"
+ECR_REPO="docker.io/sylviapaul/waf"
 IMAGE_TAG="latest"
 
 if ! docker pull --platform "$DOCKER_PLATFORM" "$ECR_REPO:$IMAGE_TAG" >/dev/null 2>&1; then
