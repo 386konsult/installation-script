@@ -1,8 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Heimdall WAF for Linux/macOS
-#  Enhanced: Stub (port 8081) forwards to Main WAF (port WAF_PORT)
-#  Nginx must point to stub port 8081
+#  Heimdall WAF for Linux/macOS – CORRECT ARCHITECTURE
+#  Main WAF (Envoy+WASM) is the ingress point.
+#  Stub is control plane (internal) – NOT exposed to host.
+#  Gateway (nginx) must proxy to main WAF on WAF_PORT.
 # ============================================================
 
 set -e
@@ -17,6 +18,7 @@ echo -e "\n${CYAN}============================================================${
 echo -e "${CYAN}         HEIMDALL WAF INSTALLATION SCRIPT${NC}"
 echo -e "${CYAN}============================================================${NC}\n"
 
+# Parse arguments
 POSITIONAL=()
 STUB_IP=""
 
@@ -47,7 +49,7 @@ echo "  WAF port:      ${CYAN}$WAF_PORT${NC}"
 echo ""
 
 # ------------------------------------------------------------
-# Docker check
+# Docker check (same as before, keep it)
 # ------------------------------------------------------------
 echo -e "${CYAN}[CHECK] Verifying Docker installation...${NC}"
 if ! command -v docker >/dev/null 2>&1; then
@@ -124,11 +126,11 @@ WAF_CONFIG_PORT=8081
 # ------------------------------------------------------------
 # Persistent volume
 # ------------------------------------------------------------
-echo -e "${CYAN}[VOLUME] Creating persistent storage...${NC}"
+echo -e "${CYAN}[VOLUME] Creating persistent storage for config...${NC}"
 docker volume create "apisphere-config-${PLATFORM_ID}" >/dev/null 2>&1
 echo "$PLATFORM_ID" | docker run --rm -i -v "apisphere-config-${PLATFORM_ID}:/config" busybox sh -c "cat > /config/PLATFORM_ID && chmod 644 /config/PLATFORM_ID"
 echo "$WAF_PORT"    | docker run --rm -i -v "apisphere-config-${PLATFORM_ID}:/config" busybox sh -c "cat > /config/WAF_PORT && chmod 644 /config/WAF_PORT"
-echo -e "${GREEN}✅ Project ID stored${NC}\n"
+echo -e "${GREEN}✅ Config stored in Docker volume${NC}\n"
 
 # ------------------------------------------------------------
 # Backend port check
@@ -147,10 +149,15 @@ fi
 echo -e "${GREEN}✅ Backend confirmed on port $BACKEND_PORT${NC}\n"
 
 # ------------------------------------------------------------
-# Stub container (with WAF_PORT forwarding)
+# Create Docker network for internal comms (main WAF ↔ stub)
 # ------------------------------------------------------------
-echo -e "${CYAN}[STEP 2] Installing Heimdall stub container...${NC}"
+echo -e "${CYAN}[NETWORK] Creating internal Docker network for WAF ↔ stub...${NC}"
+docker network inspect heimdall-internal >/dev/null 2>&1 || docker network create heimdall-internal >/dev/null 2>&1
+echo -e "${GREEN}✅ Network 'heimdall-internal' ready${NC}\n"
 
+# ------------------------------------------------------------
+# Data mount
+# ------------------------------------------------------------
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     sudo mkdir -p /data/waf && sudo chown 1000:1000 /data/waf && sudo chmod 755 /data/waf
     DATA_MOUNT="/data/waf"
@@ -159,14 +166,16 @@ else
     DATA_MOUNT="$HOME/.heimdall/waf"
 fi
 
-echo "  → Pulling stub image..."
-docker pull sylviapaul/waf-stub:latest
+# ------------------------------------------------------------
+# Stub container – INTERNAL only (no host port exposure)
+# ------------------------------------------------------------
+echo -e "${CYAN}[STEP 1] Installing stub (control plane – internal only)...${NC}"
+docker pull nifzzy/waf-stub:latest
 
-echo "  → Removing existing stub container..."
 docker stop waf-stub >/dev/null 2>&1 || true
 docker rm   waf-stub >/dev/null 2>&1 || true
 
-STUB_BACKEND_URL="$BACKEND_URL"
+# Stub needs to talk to backend for registration – use host's gateway
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     GATEWAY_IP=$(ip route 2>/dev/null | grep default | awk '{print $3}' | head -1)
     [ -z "$GATEWAY_IP" ] && GATEWAY_IP="172.17.0.1"
@@ -175,83 +184,40 @@ elif [[ "$OSTYPE" == "darwin"* ]]; then
     STUB_BACKEND_URL=$(echo "$BACKEND_URL" | sed "s/localhost/host.docker.internal/g")
 fi
 
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    STUB_RUN_CMD=(docker run -d --restart=always
-        -p 8081:8081
-        -v "${DATA_MOUNT}:/data"
-        -e PLATFORM_ID="$PLATFORM_ID"
-        -e BACKEND_URL="$STUB_BACKEND_URL"
-        -e WAF_PORT="$WAF_PORT"
-        --name waf-stub
-        sylviapaul/waf-stub:latest)
-else
-    STUB_RUN_CMD=(docker run -d --restart=always
-        --network=host
-        -v "${DATA_MOUNT}:/data"
-        -e PLATFORM_ID="$PLATFORM_ID"
-        -e BACKEND_URL="$STUB_BACKEND_URL"
-        -e WAF_PORT="$WAF_PORT"
-        --name waf-stub
-        sylviapaul/waf-stub:latest)
-fi
+# Run stub WITHOUT publishing port 8081 to host
+docker run -d --restart=always \
+    --network heimdall-internal \
+    --name waf-stub \
+    -v "${DATA_MOUNT}:/data" \
+    -e PLATFORM_ID="$PLATFORM_ID" \
+    -e BACKEND_URL="$STUB_BACKEND_URL" \
+    -e WAF_PORT="$WAF_PORT" \
+    nifzzy/waf-stub:latest >/dev/null 2>&1
 
-if ! "${STUB_RUN_CMD[@]}"; then
-    echo -e "${RED}[ERROR] Failed to start stub container. Logs:${NC}"
-    docker logs waf-stub 2>/dev/null || true
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}[ERROR] Failed to start stub container.${NC}"
     exit 1
 fi
 
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    if command -v ufw >/dev/null 2>&1; then
-        sudo ufw allow 8081/tcp >/dev/null 2>&1 && echo -e "${GREEN}✅ ufw: port 8081 opened${NC}"
-    elif command -v firewall-cmd >/dev/null 2>&1; then
-        sudo firewall-cmd --permanent --add-port=8081/tcp >/dev/null 2>&1
-        sudo firewall-cmd --reload >/dev/null 2>&1
-        echo -e "${GREEN}✅ firewalld: port 8081 opened${NC}"
-    fi
-fi
-
-echo "  → Waiting for stub to start and register..."
-sleep 5
-
-if ! docker ps --format "{{.Names}}" | grep -q "^waf-stub$"; then
-    echo -e "${RED}[ERROR] Stub container exited immediately. Logs:${NC}"
-    docker logs waf-stub
-    exit 1
-fi
-echo -e "${GREEN}✅ Stub container running on port 8081${NC}"
-
-if docker logs waf-stub 2>&1 | grep -qi "registered\|registration"; then
-    echo -e "${GREEN}✅ Stub self-registration attempted${NC}"
-else
-    echo -e "${YELLOW}⚠️  No registration log found. Check: docker logs waf-stub${NC}"
-fi
-
-if [ -n "$STUB_IP" ]; then
-    echo -e "${CYAN}[INFO] Manually registering stub: http://$STUB_IP:8081${NC}"
-    curl -s -o /dev/null -X POST "$BACKEND_URL/platforms/$PLATFORM_ID/update-stub-url/" \
-        -H "Content-Type: application/json" \
-        -d "{\"stub_url\": \"http://$STUB_IP:8081\"}" \
-        && echo -e "${GREEN}[OK] Backend updated.${NC}" \
-        || echo -e "${YELLOW}[WARN] Manual update failed – stub will self-register.${NC}"
-fi
-echo ""
+echo -e "${GREEN}✅ Stub running internally (no host port)${NC}"
+sleep 3
 
 # ------------------------------------------------------------
-# Main WAF image
+# Main WAF image pull
 # ------------------------------------------------------------
-echo -e "${CYAN}[STEP 3] Downloading main WAF image...${NC}"
-ECR_REPO="docker.io/sylviapaul/waf"
+echo -e "${CYAN}[STEP 2] Pulling main WAF image...${NC}"
+ECR_REPO="docker.io/nifzzy/waf"
 IMAGE_TAG="latest"
 
-if ! docker pull --platform "$DOCKER_PLATFORM" "$ECR_REPO:$IMAGE_TAG" >/dev/null 2>&1; then
+docker pull --platform "$DOCKER_PLATFORM" "$ECR_REPO:$IMAGE_TAG" >/dev/null 2>&1 || {
     echo -e "${RED}[ERROR] Failed to pull main WAF image.${NC}"
     exit 1
-fi
-echo -e "${GREEN}✅ Main WAF image downloaded${NC}\n"
+}
+echo -e "${GREEN}✅ Main WAF image ready${NC}\n"
 
 # ------------------------------------------------------------
-# Port conflict check
+# Port conflict check on WAF_PORT
 # ------------------------------------------------------------
 echo -e "${CYAN}[PORT] Checking port $WAF_PORT...${NC}"
 WAF_PORT_BUSY=false
@@ -273,7 +239,8 @@ if [ "$WAF_PORT_BUSY" = true ]; then
         ss -tlnp 2>/dev/null | grep -q ":${WAF_PORT}[[:space:]]" && STILL_BUSY=true
     fi
     if [ "$STILL_BUSY" = true ]; then
-        echo -e "${RED}[ERROR] Port $WAF_PORT still busy.${NC}"; exit 1
+        echo -e "${RED}[ERROR] Port $WAF_PORT still busy.${NC}"
+        exit 1
     fi
     echo -e "${GREEN}[OK] Conflict resolved${NC}"
 else
@@ -284,11 +251,13 @@ echo ""
 docker rm -f "apisphere-waf-${PLATFORM_ID}" >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------
-# Main WAF container
+# Main WAF container – ingress point, exposes WAF_PORT to host
 # ------------------------------------------------------------
-echo -e "${CYAN}[STEP 4] Starting main WAF container...${NC}"
-if ! docker run -d \
+echo -e "${CYAN}[STEP 3] Starting main WAF (ingress) on port $WAF_PORT...${NC}"
+docker run -d \
     --name "apisphere-waf-${PLATFORM_ID}" \
+    --network heimdall-internal \
+    --add-host host.docker.internal:host-gateway \
     -v "apisphere-config-${PLATFORM_ID}:/app/config:ro" \
     -v "${DATA_MOUNT}:/data/waf:ro" \
     -e PLATFORM_ID="$PLATFORM_ID" \
@@ -296,27 +265,38 @@ if ! docker run -d \
     -e BACKEND_PORT="$BACKEND_PORT" \
     -e WAF_PORT="$WAF_PORT" \
     -e WAF_CONFIG_PORT="$WAF_CONFIG_PORT" \
-    --add-host=host.docker.internal:host-gateway \
     -p "$WAF_PORT:$WAF_PORT" \
-    "$ECR_REPO:$IMAGE_TAG" >/dev/null 2>&1; then
+    "$ECR_REPO:$IMAGE_TAG" >/dev/null 2>&1
+
+if [ $? -ne 0 ]; then
     echo -e "${RED}[ERROR] Failed to start main WAF container.${NC}"
-    docker logs "apisphere-waf-${PLATFORM_ID}" 2>/dev/null || true
     exit 1
 fi
 
 sleep 5
 
 if docker ps --format "{{.Names}}" | grep -q "^apisphere-waf-${PLATFORM_ID}$"; then
-    echo -e "${GREEN}✅ Main WAF running on port $WAF_PORT${NC}"
+    echo -e "${GREEN}✅ Main WAF running on port $WAF_PORT (ingress)${NC}"
     MAIN_WAF_STARTED=1
 else
-    echo -e "${YELLOW}[WARN] Main WAF exited. Logs:${NC}"
-    docker logs "apisphere-waf-${PLATFORM_ID}"
+    echo -e "${YELLOW}[WARN] Main WAF exited. Check logs: docker logs apisphere-waf-${PLATFORM_ID}${NC}"
     MAIN_WAF_STARTED=0
 fi
 
 # ------------------------------------------------------------
-# Summary
+# Optional manual stub IP registration (if provided)
+# ------------------------------------------------------------
+if [ -n "$STUB_IP" ]; then
+    echo -e "${CYAN}[INFO] Manually registering stub: http://$STUB_IP:8081${NC}"
+    curl -s -o /dev/null -X POST "$BACKEND_URL/platforms/$PLATFORM_ID/update-stub-url/" \
+        -H "Content-Type: application/json" \
+        -d "{\"stub_url\": \"http://$STUB_IP:8081\"}" \
+        && echo -e "${GREEN}[OK] Backend updated.${NC}" \
+        || echo -e "${YELLOW}[WARN] Manual update failed – stub will self-register.${NC}"
+fi
+
+# ------------------------------------------------------------
+# Summary – CORRECT ARCHITECTURE
 # ------------------------------------------------------------
 echo ""
 echo -e "${CYAN}============================================================${NC}"
@@ -325,21 +305,35 @@ echo -e "${CYAN}============================================================${NC
 
 echo -e "${GREEN}[PROTECTION STATUS]${NC}"
 echo "  Project ID:    $PLATFORM_ID"
-echo "  Backend:       http://localhost:$BACKEND_PORT"
-echo "  Stub (front):  http://localhost:8081 (forwards to main WAF)"
-[ $MAIN_WAF_STARTED -eq 1 ] && echo "  Main WAF:      http://localhost:$WAF_PORT (internal – not exposed directly)"
-echo "  Config port:   $WAF_CONFIG_PORT"
+echo "  Your backend:  http://localhost:$BACKEND_PORT"
+echo "  Main WAF:      http://localhost:$WAF_PORT (INGRESS – expose this to users)"
+echo "  Stub:          internal only (no host port) – control plane"
+echo "  Config port:   $WAF_CONFIG_PORT (Envoy admin)"
 echo ""
-echo -e "${GREEN}[TRAFFIC FLOW - Option 1]${NC}"
-echo "  ✅ Nginx must be configured to proxy traffic to the STUB port:"
-echo "       proxy_pass http://localhost:8081;"
-echo "  ✅ Stub performs IP blacklisting + rate limiting, then forwards to main WAF."
-echo "  ✅ Main WAF does SQLi/XSS detection and forwards to backend."
+echo -e "${GREEN}[CORRECT TRAFFIC FLOW]${NC}"
+echo "  → Your gateway (nginx, Apache, Envoy) MUST proxy traffic to the MAIN WAF:"
+echo "       proxy_pass http://localhost:$WAF_PORT;"
+echo ""
+echo "  → Main WAF does:"
+echo "      - SQLi/XSS detection (blocks attacks)"
+echo "      - Forwards clean requests to your backend (port $BACKEND_PORT)"
+echo "      - Forwards control requests (from backend) to the stub internally"
+echo ""
+echo "  → Stub is NOT in the data path – only receives control updates from the WAF."
+echo ""
+echo -e "${YELLOW}⚠️  Do NOT point your gateway to port 8081 – that would put stub in data path and cause high latency.${NC}"
 echo ""
 echo -e "${GREEN}[MANAGEMENT]${NC}"
-echo "  Stub logs:     docker logs waf-stub"
-echo "  WAF logs:      docker logs apisphere-waf-${PLATFORM_ID}"
-echo "  Stop WAF:      docker stop apisphere-waf-${PLATFORM_ID}"
-echo "  Restart WAF:   docker start apisphere-waf-${PLATFORM_ID}"
+echo "  Main WAF logs:  docker logs apisphere-waf-${PLATFORM_ID}"
+echo "  Stub logs:      docker logs waf-stub"
+echo "  Stop WAF:       docker stop apisphere-waf-${PLATFORM_ID}"
+echo "  Restart WAF:    docker start apisphere-waf-${PLATFORM_ID}"
+echo "  Remove WAF:     docker rm -f apisphere-waf-${PLATFORM_ID}"
+echo "  Remove volume:  docker volume rm apisphere-config-${PLATFORM_ID}"
 echo ""
-[ $MAIN_WAF_STARTED -eq 0 ] && echo -e "${YELLOW}[NOTE] Main WAF failed. Stub is still protecting your backend.${NC}"
+echo -e "${GREEN}[NEXT STEPS FOR BACKEND INTEGRATION]${NC}"
+echo "  The backend (Heimdall) must be updated to send blacklist/rate-limit updates"
+echo "  to the MAIN WAF endpoint: http://localhost:$WAF_PORT/api/v1/waf/control"
+echo "  with header 'X-Heimdall-Control: true' – NOT directly to the stub."
+echo ""
+[ $MAIN_WAF_STARTED -eq 0 ] && echo -e "${YELLOW}[NOTE] Main WAF failed to start. Check logs.${NC}"
