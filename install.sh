@@ -121,7 +121,7 @@ else
 fi
 echo -e "${GREEN}[INFO] Architecture: $ARCH → $DOCKER_PLATFORM${NC}\n"
 
-WAF_CONFIG_PORT=8083
+WAF_CONFIG_PORT=8081
 
 # ------------------------------------------------------------
 # Persistent volume
@@ -193,6 +193,7 @@ docker run -d --restart=always \
     -e BACKEND_URL="$STUB_BACKEND_URL" \
     -e WAF_PORT="$WAF_PORT" \
     nifzzy/waf-stub:latest >/dev/null 2>&1
+
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}[ERROR] Failed to start stub container.${NC}"
