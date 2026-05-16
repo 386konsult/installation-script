@@ -170,7 +170,7 @@ fi
 # Stub container – INTERNAL only (no host port exposure)
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 1] Installing stub (control plane – internal only)...${NC}"
-docker pull nifzzy/waf-stub:latest
+docker pull sylviapaul/waf-stub:latest
 
 docker stop waf-stub >/dev/null 2>&1 || true
 docker rm   waf-stub >/dev/null 2>&1 || true
@@ -192,7 +192,7 @@ docker run -d --restart=always \
     -e PLATFORM_ID="$PLATFORM_ID" \
     -e BACKEND_URL="$STUB_BACKEND_URL" \
     -e WAF_PORT="$WAF_PORT" \
-    nifzzy/waf-stub:latest >/dev/null 2>&1
+    sylviapaul/waf-stub:latest >/dev/null 2>&1
 
 
 if [ $? -ne 0 ]; then
@@ -207,7 +207,7 @@ sleep 3
 # Main WAF image pull
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 2] Pulling main WAF image...${NC}"
-ECR_REPO="docker.io/nifzzy/waf"
+ECR_REPO="docker.io/sylviapaul/waf"
 IMAGE_TAG="latest"
 
 docker pull --platform "$DOCKER_PLATFORM" "$ECR_REPO:$IMAGE_TAG" >/dev/null 2>&1 || {
