@@ -14,7 +14,7 @@ REM ---- Parse arguments ----
 set PLATFORM_ID=%~1
 set BACKEND_PORT=%~2
 if "%~3"=="" (set WAF_PORT=8080) else (set WAF_PORT=%~3)
-set BACKEND_URL=https://staging.breachnet.io/api/v1
+set BACKEND_URL=https://heimdall.smartcomply.com/api/v1
 
 echo [CONFIG] Configuration:
 echo   Platform ID: %PLATFORM_ID%
@@ -107,7 +107,7 @@ if errorlevel 1 (
 echo [OK] Project ID stored securely in Docker volume
 
 REM ---- Pull main WAF image ----
-set ECR_REPO=docker.io/nifzzy/waf
+set ECR_REPO=docker.io/386konsult/waf
 set IMAGE_TAG=latest
 
 echo [PULL] Pulling WAF image for %PROCESSOR_ARCHITECTURE% (%DOCKER_PLATFORM%)...
@@ -197,7 +197,7 @@ echo [STEP 2] Installing Heimdall stub (control plane – internal only)...
 if not exist "C:\data\waf" mkdir C:\data\waf
 
 echo   - Pulling stub image from Docker Hub...
-docker pull nifzzy/waf-stub:latest >nul 2>&1
+docker pull 386konsult/waf-stub:latest >nul 2>&1
 
 echo   - Removing any existing stub container...
 docker stop waf-stub >nul 2>&1
@@ -211,7 +211,7 @@ docker run -d --restart=always ^
     -e PLATFORM_ID=%PLATFORM_ID% ^
     -e BACKEND_URL=%STUB_BACKEND_URL% ^
     -e WAF_PORT=%WAF_PORT% ^
-    --name waf-stub nifzzy/waf-stub:latest >nul 2>&1
+    --name waf-stub 386konsult/waf-stub:latest >nul 2>&1
 
 if errorlevel 1 (
     echo [ERROR] Failed to start stub container.
