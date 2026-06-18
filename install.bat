@@ -161,6 +161,11 @@ if "%PORT_CONFLICT%"=="true" (
     echo [OK] Port conflict resolved
 )
 
+REM ---- Create internal Docker network for WAF <-> stub ----
+echo [NETWORK] Creating internal Docker network...
+docker network inspect heimdall-internal >nul 2>&1 || docker network create heimdall-internal >nul 2>&1
+echo [OK] Network ready
+
 REM ---- Remove old main WAF container ----
 echo [CLEANUP] Removing old WAF containers (if any)...
 docker rm -f apisphere-waf-%PLATFORM_ID% >nul 2>&1
@@ -169,6 +174,7 @@ if not exist "C:\data\waf" mkdir C:\data\waf
 
 echo [STEP 1] Starting Heimdall Main WAF (Envoy + WASM)...
 docker run -d --name apisphere-waf-%PLATFORM_ID% ^
+    --network heimdall-internal ^
     --add-host host.docker.internal:host-gateway ^
     -v apisphere-config-%PLATFORM_ID%:/app/config:ro ^
     -v C:\data\waf:/data/waf:ro ^
@@ -206,6 +212,7 @@ docker rm waf-stub >nul 2>&1
 echo   - Starting stub container (no host port exposure – only reachable internally)...
 set STUB_BACKEND_URL=%BACKEND_URL:localhost=host.docker.internal%
 docker run -d --restart=always ^
+    --network heimdall-internal ^
     --add-host host.docker.internal:host-gateway ^
     -v C:\data\waf:/data ^
     -e PLATFORM_ID=%PLATFORM_ID% ^
