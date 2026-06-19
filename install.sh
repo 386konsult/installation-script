@@ -254,7 +254,7 @@ docker rm -f "apisphere-waf-${PLATFORM_ID}" >/dev/null 2>&1 || true
 # Main WAF container – ingress point, exposes WAF_PORT to host
 # ------------------------------------------------------------
 echo -e "${CYAN}[STEP 3] Starting main WAF (ingress) on port $WAF_PORT...${NC}"
-docker run -d \
+docker run -d --restart=always \
     --name "apisphere-waf-${PLATFORM_ID}" \
     --network heimdall-internal \
     --add-host host.docker.internal:host-gateway \
