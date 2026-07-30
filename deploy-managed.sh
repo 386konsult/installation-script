@@ -24,7 +24,7 @@ SSL_KEY="/etc/letsencrypt/live/heimdallsecurity.io/privkey.pem"
 NGINX_SITES="/etc/nginx/sites-available"
 NGINX_ENABLED="/etc/nginx/sites-enabled"
 PORT_REGISTRY="/etc/heimdall/managed-ports"
-WAF_IMAGE="docker.io/386konsult/waf:latest"
+WAF_IMAGE="docker.io/386konsult/managed-waf:latest"
 STUB_IMAGE="386konsult/waf-stub:latest"
 WAF_CONFIG_PORT=8083
 
@@ -180,6 +180,7 @@ docker run -d --restart=always \
     -e PLATFORM_ID="$PLATFORM_ID" \
     -e BACKEND_HOST="$BACKEND_HOST" \
     -e BACKEND_PORT="$BACKEND_PORT" \
+    -e ORIGIN_SCHEME="$SCHEME" \
     -e WAF_PORT="$ALLOCATED_PORT" \
     -e WAF_CONFIG_PORT="$WAF_CONFIG_PORT" \
     -p "$ALLOCATED_PORT:$ALLOCATED_PORT" \
