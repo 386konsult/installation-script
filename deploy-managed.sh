@@ -90,8 +90,26 @@ else
     [[ "$SCHEME" == "https" ]] && BACKEND_PORT=443 || BACKEND_PORT=80
 fi
 
+EFFECTIVE_HOST="$BACKEND_HOST"
+EFFECTIVE_PORT="$BACKEND_PORT"
+EFFECTIVE_SCHEME="$SCHEME"
+ORIGIN_PROXY_PORT=""
+
 if [[ "$SCHEME" == "https" ]]; then
-    echo -e "${YELLOW}[WARN] destination_url uses HTTPS. The WAF will connect to origin over HTTP on port $BACKEND_PORT. Ensure origin accepts plain HTTP connections.${NC}"
+    echo -e "${CYAN}[PROXY] HTTPS origin detected — will bridge via local nginx proxy${NC}"
+    for port in $(seq 8000 8999); do
+        if ! ss -tlnp | grep -q ":${port}[[:space:]]"; then
+            ORIGIN_PROXY_PORT="$port"
+            break
+        fi
+    done
+    if [[ -z "$ORIGIN_PROXY_PORT" ]]; then
+        echo -e "${RED}[ERROR] No available ports for HTTPS origin proxy (8000-8999).${NC}"
+        exit 1
+    fi
+    EFFECTIVE_HOST="host.docker.internal"
+    EFFECTIVE_PORT="$ORIGIN_PROXY_PORT"
+    EFFECTIVE_SCHEME="http"
 fi
 
 echo -e "  Backend host: ${GREEN}$BACKEND_HOST${NC}  port: ${GREEN}$BACKEND_PORT${NC}\n"
@@ -178,9 +196,10 @@ docker run -d --restart=always \
     -v "apisphere-config-${PLATFORM_ID}:/app/config:ro" \
     -v "${DATA_MOUNT}:/data/waf:ro" \
     -e PLATFORM_ID="$PLATFORM_ID" \
-    -e BACKEND_HOST="$BACKEND_HOST" \
-    -e BACKEND_PORT="$BACKEND_PORT" \
-    -e ORIGIN_SCHEME="$SCHEME" \
+    -e BACKEND_HOST="$EFFECTIVE_HOST" \
+    -e BACKEND_PORT="$EFFECTIVE_PORT" \
+    -e ORIGIN_SCHEME="$EFFECTIVE_SCHEME" \
+    --add-host=host.docker.internal:host-gateway \
     -e WAF_PORT="$ALLOCATED_PORT" \
     -e WAF_CONFIG_PORT="$WAF_CONFIG_PORT" \
     -p "$ALLOCATED_PORT:$ALLOCATED_PORT" \
@@ -229,8 +248,7 @@ server {
 }
 EOF
 else
-    # Custom domain — HTTP only; HTTPS needs a separate cert
-    echo -e "${YELLOW}[WARN] Custom domain: adding HTTP-only config. Add SSL cert manually for HTTPS.${NC}"
+    # Custom domain — HTTP config; certbot will upgrade to HTTPS automatically
     cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
@@ -258,6 +276,41 @@ nginx -t >/dev/null 2>&1 || {
 systemctl reload nginx
 echo -e "${GREEN}  nginx configured and reloaded${NC}"
 
+# ── HTTPS origin proxy ────────────────────────────────────────
+if [[ -n "$ORIGIN_PROXY_PORT" ]]; then
+    ORIGIN_PROXY_CONF="${NGINX_SITES}/heimdall-origin-proxy-${PLATFORM_ID}.conf"
+    cat > "$ORIGIN_PROXY_CONF" <<EOF
+server {
+    listen ${ORIGIN_PROXY_PORT};
+    server_name localhost;
+
+    location / {
+        proxy_pass         https://${BACKEND_HOST};
+        proxy_ssl_server_name on;
+        proxy_ssl_verify   off;
+        proxy_set_header   Host              ${BACKEND_HOST};
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+    }
+}
+EOF
+    ln -sf "$ORIGIN_PROXY_CONF" "$NGINX_ENABLED/"
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx
+    echo -e "${GREEN}  HTTPS origin proxy active: port $ORIGIN_PROXY_PORT → https://$BACKEND_HOST${NC}"
+fi
+
+# ── Auto SSL for custom domains ───────────────────────────────
+if [[ "$PROTECTED_HOSTNAME" != *".heimdallsecurity.io" ]]; then
+    echo -e "${CYAN}[SSL] Provisioning certificate for $PROTECTED_HOSTNAME...${NC}"
+    if certbot --nginx -d "$PROTECTED_HOSTNAME" --non-interactive --agree-tos -m "admin@heimdallsecurity.io" --redirect >/dev/null 2>&1; then
+        echo -e "${GREEN}  SSL certificate issued — HTTPS enabled${NC}"
+    else
+        echo -e "${YELLOW}  [WARN] certbot failed — running HTTP only. Ensure DNS points to this server first.${NC}"
+    fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────
 echo ""
 echo -e "${CYAN}============================================================${NC}"
@@ -282,5 +335,8 @@ echo "  Stub logs:  docker logs $STUB_CONTAINER"
 echo "  Stop:       docker stop $WAF_CONTAINER $STUB_CONTAINER"
 echo "  Remove:     docker rm -f $WAF_CONTAINER $STUB_CONTAINER"
 echo "              docker network rm $NETWORK_NAME"
-echo "              rm ${NGINX_CONF} ${NGINX_ENABLED}/heimdall-managed-${PLATFORM_ID}.conf"
+echo "              rm -f ${NGINX_CONF} ${NGINX_ENABLED}/heimdall-managed-${PLATFORM_ID}.conf"
+if [[ -n "$ORIGIN_PROXY_PORT" ]]; then
+echo "              rm -f ${NGINX_SITES}/heimdall-origin-proxy-${PLATFORM_ID}.conf ${NGINX_ENABLED}/heimdall-origin-proxy-${PLATFORM_ID}.conf"
+fi
 echo "              nginx -t && systemctl reload nginx"
