@@ -302,6 +302,8 @@ server {
 EOF
     ln -sf "$ORIGIN_PROXY_CONF" "$NGINX_ENABLED/"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx
+    iptables -C INPUT -i br+ -p tcp --dport "$ORIGIN_PROXY_PORT" -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -i br+ -p tcp --dport "$ORIGIN_PROXY_PORT" -j ACCEPT
     echo -e "${GREEN}  HTTPS origin proxy active: port $ORIGIN_PROXY_PORT → https://$BACKEND_HOST${NC}"
 fi
 
