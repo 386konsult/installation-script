@@ -57,6 +57,95 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+# ── Nginx log format (idempotent) ────────────────────────────
+LOG_FORMAT_CONF="/etc/nginx/conf.d/heimdall-log-format.conf"
+if [[ ! -f "$LOG_FORMAT_CONF" ]]; then
+    cat > "$LOG_FORMAT_CONF" <<'EOF'
+log_format heimdall_json escape=json '{"platform_id":"$heimdall_platform_id","ip":"$remote_addr","method":"$request_method","url":"$scheme://$host$request_uri","status_code":$status,"user_agent":"$http_user_agent","response_time_ms":$request_time,"timestamp":"$time_iso8601"}';
+EOF
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx
+fi
+
+# ── Log forwarder (idempotent) ────────────────────────────────
+mkdir -p /etc/heimdall
+FORWARDER="/etc/heimdall/log-forwarder.py"
+if [[ ! -f "$FORWARDER" ]]; then
+    cat > "$FORWARDER" <<'PYEOF'
+#!/usr/bin/env python3
+import glob, json, time, os
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+BACKEND_URL = "https://api.heimdallsecurity.io/api/v1/waf/log-request/"
+LOG_PATTERN  = "/var/log/nginx/heimdall-*.log"
+STATE_FILE   = "/etc/heimdall/log-forwarder-state.json"
+
+def load_state():
+    try:
+        with open(STATE_FILE) as f: return json.load(f)
+    except: return {}
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, 'w') as f: json.dump(state, f)
+    except: pass
+
+def send(entry):
+    try:
+        body = json.dumps(entry).encode()
+        req  = Request(BACKEND_URL, data=body, headers={"Content-Type": "application/json"})
+        urlopen(req, timeout=5)
+    except: pass
+
+def main():
+    state = load_state()
+    while True:
+        for path in glob.glob(LOG_PATTERN):
+            offset = state.get(path, 0)
+            try:
+                if os.path.getsize(path) < offset: offset = 0
+                with open(path) as f:
+                    f.seek(offset)
+                    for line in f:
+                        line = line.strip()
+                        if not line: continue
+                        try:
+                            entry = json.loads(line)
+                            rt = entry.get('response_time_ms')
+                            if isinstance(rt, float):
+                                entry['response_time_ms'] = int(rt * 1000)
+                            send(entry)
+                        except: pass
+                    state[path] = f.tell()
+            except: pass
+        save_state(state)
+        time.sleep(2)
+
+if __name__ == '__main__': main()
+PYEOF
+    chmod +x "$FORWARDER"
+fi
+
+SERVICE="/etc/systemd/system/heimdall-log-forwarder.service"
+if [[ ! -f "$SERVICE" ]]; then
+    cat > "$SERVICE" <<'EOF'
+[Unit]
+Description=Heimdall WAF Log Forwarder
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /etc/heimdall/log-forwarder.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable heimdall-log-forwarder >/dev/null 2>&1
+fi
+
 # ── Fetch destination config from backend ────────────────────
 echo -e "${CYAN}[FETCH] Getting destination config for $PLATFORM_ID...${NC}"
 
@@ -97,6 +186,13 @@ ORIGIN_PROXY_PORT=""
 
 if [[ "$SCHEME" == "https" ]]; then
     echo -e "${CYAN}[PROXY] HTTPS origin detected — will bridge via local nginx proxy${NC}"
+    OLD_PROXY_CONF="${NGINX_SITES}/heimdall-origin-proxy-${PLATFORM_ID}.conf"
+    if [[ -f "$OLD_PROXY_CONF" ]]; then
+        OLD_PROXY_PORT=$(grep -oP '(?<=listen )\d+' "$OLD_PROXY_CONF" | head -1)
+        rm -f "$OLD_PROXY_CONF" "${NGINX_ENABLED}/heimdall-origin-proxy-${PLATFORM_ID}.conf"
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx
+        iptables -D INPUT -i br+ -p tcp --dport "$OLD_PROXY_PORT" -j ACCEPT 2>/dev/null || true
+    fi
     for port in $(seq 8000 8999); do
         if ! ss -tlnp | grep -q ":${port}[[:space:]]"; then
             ORIGIN_PROXY_PORT="$port"
@@ -231,6 +327,8 @@ server {
     listen 443 ssl;
     listen [::]:443 ssl;
     server_name ${PROTECTED_HOSTNAME};
+    set \$heimdall_platform_id "${PLATFORM_ID}";
+    access_log /var/log/nginx/heimdall-${PLATFORM_ID}.log heimdall_json;
 
     ssl_certificate     ${SSL_CERT};
     ssl_certificate_key ${SSL_KEY};
@@ -256,6 +354,8 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${PROTECTED_HOSTNAME};
+    set \$heimdall_platform_id "${PLATFORM_ID}";
+    access_log /var/log/nginx/heimdall-${PLATFORM_ID}.log heimdall_json;
 
     location / {
         proxy_pass         http://127.0.0.1:${ALLOCATED_PORT};
@@ -316,6 +416,10 @@ if [[ "$PROTECTED_HOSTNAME" != *".heimdallsecurity.io" ]]; then
         echo -e "${YELLOW}  [WARN] certbot failed — running HTTP only. Ensure DNS points to this server first.${NC}"
     fi
 fi
+
+# ── Start log forwarder ───────────────────────────────────────
+systemctl restart heimdall-log-forwarder >/dev/null 2>&1 || systemctl start heimdall-log-forwarder >/dev/null 2>&1
+echo -e "${GREEN}  Log forwarder running${NC}"
 
 # ── Summary ───────────────────────────────────────────────────
 echo ""
