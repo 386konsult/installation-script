@@ -261,16 +261,16 @@ docker pull "$STUB_IMAGE" >/dev/null 2>&1
 docker pull "$WAF_IMAGE"  >/dev/null 2>&1
 echo -e "${GREEN}  Images ready${NC}\n"
 
-# ── Patch envoy templates (add django_backend cluster for WAF logging) ──
+# ── Patch envoy templates (add custom_backend cluster for WAF logging) ──
 TMPL_DIR="/etc/heimdall/envoy-templates"
 mkdir -p "$TMPL_DIR"
 for SCHEME in https http; do
     TMPL="$TMPL_DIR/envoy-${SCHEME}.yaml.template"
     docker run --rm "$WAF_IMAGE" cat "/etc/envoy/envoy-${SCHEME}.yaml.template" > "$TMPL" 2>/dev/null
-    if ! grep -q "django_backend" "$TMPL"; then
+    if ! grep -q "custom_backend" "$TMPL"; then
         cat >> "$TMPL" <<'EOF'
 
-  - name: django_backend
+  - name: custom_backend
     connect_timeout: 10s
     type: STRICT_DNS
     lb_policy: ROUND_ROBIN
@@ -280,7 +280,7 @@ for SCHEME in https http; do
         "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
         sni: api.heimdallsecurity.io
     load_assignment:
-      cluster_name: django_backend
+      cluster_name: custom_backend
       endpoints:
       - lb_endpoints:
         - endpoint:
