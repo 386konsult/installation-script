@@ -261,6 +261,37 @@ docker pull "$STUB_IMAGE" >/dev/null 2>&1
 docker pull "$WAF_IMAGE"  >/dev/null 2>&1
 echo -e "${GREEN}  Images ready${NC}\n"
 
+# ── Patch envoy templates (add django_backend cluster for WAF logging) ──
+TMPL_DIR="/etc/heimdall/envoy-templates"
+mkdir -p "$TMPL_DIR"
+for SCHEME in https http; do
+    TMPL="$TMPL_DIR/envoy-${SCHEME}.yaml.template"
+    docker run --rm "$WAF_IMAGE" cat "/etc/envoy/envoy-${SCHEME}.yaml.template" > "$TMPL" 2>/dev/null
+    if ! grep -q "django_backend" "$TMPL"; then
+        cat >> "$TMPL" <<'EOF'
+
+  - name: django_backend
+    connect_timeout: 10s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        sni: api.heimdallsecurity.io
+    load_assignment:
+      cluster_name: django_backend
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: api.heimdallsecurity.io
+                port_value: 443
+EOF
+    fi
+done
+
 # ── Stub container (control plane, internal only) ─────────────
 echo -e "${CYAN}[STEP 1] Starting stub (control plane)...${NC}"
 docker rm -f "$STUB_CONTAINER" >/dev/null 2>&1 || true
@@ -291,6 +322,8 @@ docker run -d --restart=always \
     --network "$NETWORK_NAME" \
     -v "apisphere-config-${PLATFORM_ID}:/app/config:ro" \
     -v "${DATA_MOUNT}:/data/waf:ro" \
+    -v "$TMPL_DIR/envoy-https.yaml.template:/etc/envoy/envoy-https.yaml.template:ro" \
+    -v "$TMPL_DIR/envoy-http.yaml.template:/etc/envoy/envoy-http.yaml.template:ro" \
     -e PLATFORM_ID="$PLATFORM_ID" \
     -e BACKEND_HOST="$EFFECTIVE_HOST" \
     -e BACKEND_PORT="$EFFECTIVE_PORT" \
