@@ -334,12 +334,21 @@ docker run -d --restart=always \
     -p "$ALLOCATED_PORT:$ALLOCATED_PORT" \
     "$WAF_IMAGE" >/dev/null 2>&1
 
-sleep 5
+sleep 8
 
 if ! docker ps --format "{{.Names}}" | grep -q "^${WAF_CONTAINER}$"; then
     echo -e "${RED}[ERROR] WAF container failed to start. Check: docker logs $WAF_CONTAINER${NC}"
+    docker logs "$WAF_CONTAINER" --tail 20 2>/dev/null || true
     exit 1
 fi
+
+RESTART_COUNT=$(docker inspect --format='{{.RestartCount}}' "$WAF_CONTAINER" 2>/dev/null || echo "0")
+if [[ "$RESTART_COUNT" -gt 0 ]]; then
+    echo -e "${RED}[ERROR] WAF container is crash-looping (restarts: $RESTART_COUNT). Last logs:${NC}"
+    docker logs "$WAF_CONTAINER" --tail 20 2>/dev/null || true
+    exit 1
+fi
+
 echo -e "${GREEN}  WAF running on port $ALLOCATED_PORT${NC}\n"
 
 # ── nginx config ──────────────────────────────────────────────
